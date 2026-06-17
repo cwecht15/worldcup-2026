@@ -1,0 +1,49 @@
+team,elo,american_odds,tier,group,host
+Spain,2171,450,1,H,0
+France,2063,475,1,I,0
+England,2042,750,1,L,0
+Brazil,1979,900,1,C,0
+Argentina,2113,900,1,J,0
+Portugal,1976,800,2,K,0
+Germany,1910,1400,2,E,0
+Netherlands,1959,2000,2,F,0
+Norway,1922,3000,2,I,0
+Belgium,1849,4000,2,G,0
+Colombia,1998,4000,2,K,0
+Morocco,1806,5000,3,C,0
+Uruguay,1890,6500,3,H,0
+USA,1747,6000,3,D,1
+Switzerland,1897,6500,3,B,0
+Japan,1879,5500,3,F,0
+Ecuador,1933,8000,3,E,0
+Croatia,1913,9000,3,L,0
+Mexico,1834,6500,3,A,1
+Senegal,1869,9000,4,I,0
+Turkey,1880,9000,4,D,0
+Sweden,1660,12000,4,F,0
+Austria,1818,15000,4,J,0
+Scotland,1790,20000,4,C,0
+Canada,1806,20000,4,B,1
+Czechia,1731,25000,4,A,0
+Ivory Coast,1637,25000,4,E,0
+Ghana,1509,30000,4,L,0
+Egypt,1660,30000,4,G,0
+Paraguay,1833,30000,4,D,0
+Algeria,1728,35000,4,J,0
+South Korea,1784,40000,5,A,0
+Tunisia,1614,50000,5,F,0
+Bosnia,1571,50000,5,B,0
+Australia,1774,60000,5,D,0
+Iran,1754,70000,5,G,0
+DR Congo,1639,100000,5,K,0
+South Africa,1529,100000,5,A,0
+Cape Verde,1561,100000,5,H,0
+Saudi Arabia,1592,100000,5,H,0
+Panama,1743,100000,5,L,0
+Uzbekistan,1735,150000,6,K,0
+Qatar,1427,150000,6,B,0
+New Zealand,1586,150000,6,G,0
+Iraq,1583,150000,6,I,0
+Haiti,1542,250000,6,C,0
+Curacao,1467,250000,6,E,0
+Jordan,1691,250000,6,J,0

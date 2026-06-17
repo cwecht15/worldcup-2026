@@ -1,0 +1,62 @@
+name: Build & Deploy World Cup Pool Site
+
+# Rebuilds web/data/sim.json from the engine + live sheet and publishes web/ to
+# GitHub Pages. Odds are refreshed from The Odds API on the scheduled runs only
+# (to stay well inside the free 500-requests/month tier; ~2 requests per refresh).
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"     # every 6 hours
+  workflow_dispatch:           # manual "Run workflow" button
+  push:
+    branches: [main]           # redeploy on frontend/engine changes (no odds refresh)
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - name: Configure odds refresh
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ -n "$ODDS_API_KEY" ]; then
+            printf '%s' "$ODDS_API_KEY" > data/.odds_api_key
+          fi
+          # only spend API quota on the scheduled (cron) runs
+          if [ "$EVENT" = "schedule" ] && [ -n "$ODDS_API_KEY" ]; then
+            echo "REFRESH=--refresh-odds" >> "$GITHUB_ENV"
+          else
+            echo "REFRESH=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build sim.json
+        run: python build_web_data.py $REFRESH --n 200000
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,4 @@
+data/.odds_api_key
+__pycache__/
+*.pyc
+*.log

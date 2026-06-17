@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>World Cup Pool 2026 · Live Model</title>
+<meta name="description" content="Live leaderboard and Monte Carlo projections for the 2026 World Cup pool — pool win odds, champion projection, best picks, and each entry's path to victory." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="bg-grid" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="ball">⚽</span>
+    <div class="brand-text">
+      <h1>WORLD&nbsp;CUP&nbsp;POOL</h1>
+      <span class="brand-sub">2026 · live model</span>
+    </div>
+  </div>
+  <nav class="nav">
+    <a href="#leaderboard">Leaderboard</a>
+    <a href="#champion">Champion</a>
+    <a href="#bestpicks">Best Picks</a>
+    <a href="#teams">Teams</a>
+    <a href="#boot">Golden Boot</a>
+  </nav>
+  <div class="status">
+    <span class="provenance" id="provenance">loading…</span>
+    <span class="live-pill"><span class="dot"></span><span id="countdown">60</span>s</span>
+  </div>
+</header>
+
+<main>
+  <!-- STAT STRIP -->
+  <section class="stat-strip" id="statstrip" aria-label="Pool snapshot"></section>
+
+  <!-- CHAMPION + BEST PICKS -->
+  <div class="two-col">
+    <section class="card" id="champion">
+      <div class="card-head"><h2>Champion Projection</h2><span class="tag">simulated</span></div>
+      <div id="champion-body" class="champ-body">—</div>
+    </section>
+    <section class="card" id="bestpicks">
+      <div class="card-head"><h2>Best Picks <span class="muted">by tier</span></h2><span class="tag">model</span></div>
+      <div id="bestpicks-body">—</div>
+    </section>
+  </div>
+
+  <!-- LEADERBOARD -->
+  <section class="card wide" id="leaderboard">
+    <div class="card-head">
+      <h2>Leaderboard</h2>
+      <div class="sort-toggle" role="tablist" aria-label="Sort leaderboard">
+        <button data-sort="live" class="active">Live points</button>
+        <button data-sort="win">Win %</button>
+      </div>
+    </div>
+    <div class="lb-wrap"><table class="lb" id="lb">
+      <thead><tr>
+        <th class="c-rank">#</th>
+        <th class="c-name">Entry</th>
+        <th class="c-picks">Picks (T1–T6)</th>
+        <th class="c-num">Live</th>
+        <th class="c-num">Proj</th>
+        <th class="c-win">Win %</th>
+        <th class="c-boot">Golden Boot</th>
+      </tr></thead>
+      <tbody id="lb-body"></tbody>
+    </table></div>
+    <p class="disclaimer" id="lb-disclaimer"></p>
+  </section>
+
+  <!-- TEAM VALUE EXPLORER -->
+  <section class="card wide" id="teams">
+    <div class="card-head">
+      <h2>Team Value <span class="muted">explorer</span></h2>
+      <div class="filters">
+        <div class="seg" id="tier-filter" role="group" aria-label="Filter by tier"></div>
+        <div class="seg" id="team-sort" role="group" aria-label="Sort teams">
+          <button data-tsort="ev" class="active">EV</button>
+          <button data-tsort="title">Title %</button>
+          <button data-tsort="leverage">Leverage</button>
+        </div>
+      </div>
+    </div>
+    <div id="teams-body" class="team-grid"></div>
+    <p class="legend" id="teams-legend"></p>
+  </section>
+
+  <!-- GOLDEN BOOT -->
+  <section class="card wide" id="boot">
+    <div class="card-head"><h2>Golden Boot Race</h2><span class="tag" id="boot-total"></span></div>
+    <div id="boot-body"></div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div id="scoring-legend" class="scoring"></div>
+  <p class="fine">
+    Projections come from a Monte&nbsp;Carlo simulation of the full 2026 bracket, calibrated to
+    DraftKings title &amp; match odds. <strong>Win&nbsp;%</strong> is each entry's modeled chance of
+    finishing first (Golden&nbsp;Boot tiebreak included). The model replays the entire tournament
+    from today's odds — it does <em>not</em> account for results already completed. Live points come
+    straight from the pool's Google&nbsp;Sheet.
+  </p>
+  <p class="fine muted">Built on the <code>wcpool</code> engine · this is a model, not betting advice.</p>
+</footer>
+
+<script src="flags.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
