@@ -39,6 +39,8 @@ SHEET_CSV_URL = (
     "kN90EAJfJQaf8BacjBBRkNzloun10HnMdLBzFWZt-qU4JHZaVb3I80/pub"
     "?gid=1567052873&single=true&output=csv"
 )
+# previously-deployed sim.json: lets us compute win-odds momentum (climbers/fallers)
+PREV_SIM_URL = "https://cwecht15.github.io/worldcup-2026/data/sim.json"
 
 # sheet header (normalized) -> our canonical team name, where they differ.
 # normalize = lowercase, strip, drop non-alphanumerics.
@@ -313,15 +315,36 @@ def build_paths(entries, scores, pool, sim, teams):
             champ_when = {"team": teams.names[int(top)],
                           "pct": round(100.0 * counts.max() / len(champs), 1)}
         twin = float(np.median(scores[e][target])) if target.any() else 0.0
-        # chief rival: who leads when this entry is the runner-up
+        # chief rival: who leads when this entry is the runner-up, and WHY
         rival = None
         runner = sb[e] == 1
         if runner.any():
             rl = leader[runner]
             vals, counts = np.unique(rl, return_counts=True)
             ri = int(vals[np.argmax(counts)])
+            ri_mask = runner & (leader == ri)
+            ePicks, rPicks = ent["picks"], entries[ri]["picks"]
+            eset = {i for i in ePicks if i is not None}
+            rset = {i for i in rPicks if i is not None}
+            shared = [teams.names[i] for i in eset & rset]
+            rival_edge = [teams.names[i] for i in rset - eset]
+            your_edge = [teams.names[i] for i in eset - rset]
+            # decisive tier: where the rival most out-scores you when they beat you
+            decisive, best_gap = None, 0.0
+            for t in range(6):
+                pe, pr = ePicks[t], rPicks[t]
+                if pe is None or pr is None or pe == pr:
+                    continue
+                gap = (float((sim.total_pts[ri_mask, pr] - sim.total_pts[ri_mask, pe]).mean())
+                       if ri_mask.any() else 0.0)
+                if gap > best_gap:
+                    best_gap = gap
+                    decisive = {"tier": t + 1, "rival_team": teams.names[pr],
+                                "your_team": teams.names[pe], "gap": round(gap, 1)}
             rival = {"name": entries[ri]["name"],
-                     "pct": round(100.0 * counts.max() / runner.sum(), 1)}
+                     "pct": round(100.0 * counts.max() / runner.sum(), 1),
+                     "shared": shared, "rival_edge": rival_edge,
+                     "your_edge": your_edge, "decisive": decisive}
         paths.append({
             "linchpin": linchpin, "carries": carries[:6],
             "champion_when_win": champ_when,
@@ -346,6 +369,28 @@ def _path_summary(ent, linchpin, champ, rival, can_win):
         return ("Long shot: only wins in chaos scenarios. "
                 + ("; ".join(bits) + "." if bits else ""))
     return ("; ".join(bits) + ".") if bits else "Balanced lineup with no single linchpin."
+
+
+def fetch_prev(url):
+    """Fetch the previously-deployed sim.json to diff win odds / ranks against.
+
+    Returns {"map": {folded_name: {win_prob, rank, proj}}, "as_of": iso} or None.
+    Rank is by win probability (1 = best)."""
+    try:
+        u = url + ("&" if "?" in url else "?") + "cb=1"
+        req = urllib.request.Request(u, headers={"User-Agent": "wc-pool-builder"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            d = json.load(r)
+    except Exception as e:
+        print(f"[movers] no previous sim.json to diff ({e}); momentum starts fresh")
+        return None
+    ents = d.get("entries", [])
+    order = sorted(ents, key=lambda e: -(e.get("win_prob") or 0))
+    rank = {results._fold(e["name"]): i + 1 for i, e in enumerate(order)}
+    pmap = {results._fold(e["name"]): {"win_prob": e.get("win_prob"),
+                                       "rank": rank[results._fold(e["name"])],
+                                       "proj": e.get("proj_total")} for e in ents}
+    return {"map": pmap, "as_of": (d.get("meta", {}) or {}).get("generated_at")}
 
 
 def compute_finals(entries, sim):
@@ -451,22 +496,77 @@ def build_golden_boot(sim, teams, players_df, entries,
     for ent in entries:
         if ent["boot_pick_name"]:
             own[ent["boot_pick_name"]] = own.get(ent["boot_pick_name"], 0) + 1
-    race = [{"player": r["player"], "team": r["team"],
-             "win": round(float(r["win%"]), 1),
-             "exp_goals": round(float(r["exp_goals"]), 2),
-             "p_6plus": round(float(r["p_6plus"]), 1),
-             "actual_own": round(own.get(r["player"], 0) / n, 4)}
-            for _, r in gb["table"].head(12).iterrows()]
+    real_by_fold = {results._fold(k): (v.get("goals", 0) or 0)
+                    for k, v in (real_player_goals or {}).items()}
+    race = []
+    for _, r in gb["table"].head(12).iterrows():
+        total = round(float(r["exp_goals"]), 2)             # current + expected remaining
+        cur = int(real_by_fold.get(results._fold(r["player"]), 0))
+        race.append({"player": r["player"], "team": r["team"],
+                     "win": round(float(r["win%"]), 1),
+                     "exp_goals": total, "current": cur,
+                     "remaining": round(max(0.0, total - cur), 2),
+                     "p_6plus": round(float(r["p_6plus"]), 1),
+                     "actual_own": round(own.get(r["player"], 0) / n, 4)})
     return {"exp_winning_total": round(gb["exp_winning_total"], 1),
-            "median_winning_total": int(gb["median_winning_total"]), "race": race}
+            "median_winning_total": int(gb["median_winning_total"]),
+            "conditional": bool(real_player_goals), "race": race}
+
+
+def build_groups(teams, sim, res):
+    """Per-group standings from real results + each team's chance to advance.
+
+    Standings (P/W/D/L/GF/GA/GD/Pts) come from completed GROUP matches; `reach`
+    is the modeled chance to reach the knockouts; `status` is in (advanced) /
+    out (eliminated) / live, derived from the conditional sim's locked points."""
+    reach = sim.reach_prob() * 100.0
+    tp_min = sim.total_pts.min(axis=0)
+    tp_max = sim.total_pts.max(axis=0)
+    rec = {i: {"p": 0, "w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0} for i in range(teams.n)}
+    scores = {g: [] for g in teams.groups}
+    if res:
+        for m in res.matches:
+            if m["round"] != "GROUP":
+                continue
+            i, j, gi, gj = m["i"], m["j"], m["gi"], m["gj"]
+            for a, gfa, gaa in ((i, gi, gj), (j, gj, gi)):
+                r = rec[a]
+                r["p"] += 1; r["gf"] += gfa; r["ga"] += gaa
+                r["w"] += gfa > gaa; r["d"] += gfa == gaa; r["l"] += gfa < gaa
+            scores[teams.group[i]].append(
+                {"home": teams.names[i], "away": teams.names[j], "hg": gi, "ag": gj})
+
+    groups = []
+    for g in sorted(teams.groups):
+        rows = []
+        for i in teams.groups[g]:
+            r = rec[i]
+            pts = r["w"] * 3 + r["d"]
+            if res and tp_max[i] <= tp_min[i]:
+                status = "out"
+            elif res and reach[i] >= 99.9:
+                status = "in"
+            else:
+                status = "live"
+            rows.append({"name": teams.names[i], "p": r["p"], "w": r["w"], "d": r["d"],
+                         "l": r["l"], "gf": r["gf"], "ga": r["ga"],
+                         "gd": r["gf"] - r["ga"], "pts": pts,
+                         "reach": round(float(reach[i])), "status": status})
+        rows.sort(key=lambda x: (-x["pts"], -x["gd"], -x["gf"], -x["reach"], x["name"]))
+        groups.append({"letter": g, "teams": rows, "matches": scores[g]})
+    return groups
 
 
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
 def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
-                  actual_own, teams, beta, n_full, now_iso, finals=None, res=None):
+                  actual_own, teams, beta, n_full, now_iso, finals=None, res=None,
+                  groups=None, prev=None):
     E = len(entries)
+    # current rank by win probability (1 = best), for momentum vs the last build
+    win_order = sorted(range(E), key=lambda i: -float(pool["win_prob"][i]))
+    cur_rank = {i: r + 1 for r, i in enumerate(win_order)}
     # most-picked teams (by name)
     counts = {}
     for ent in entries:
@@ -478,8 +578,15 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
 
     out_entries = []
     for e, ent in enumerate(entries):
+        prevrec = prev["map"].get(results._fold(ent["name"])) if prev else None
+        win_now = float(pool["win_prob"][e])
+        wp = prevrec["win_prob"] if prevrec else None
+        delta_win = round(win_now - wp, 4) if (prevrec and wp is not None) else None
+        rank_delta = (prevrec["rank"] - cur_rank[e]) if (prevrec and prevrec.get("rank")) else None
         out_entries.append({
             "name": ent["name"],
+            "delta_win": delta_win,        # change in win prob since the last build (+ = up)
+            "rank_delta": rank_delta,      # win-rank positions gained (+ = climbed)
             "picks": [nm for nm in ent["pick_names"]],
             "pick_tiers": [1, 2, 3, 4, 5, 6],
             "unmapped_tiers": ent["unmapped_tiers"],
@@ -512,12 +619,14 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
             "results": ({"conditional": True, "as_of": res.as_of,
                          "matches_played": res.n_matches} if res
                         else {"conditional": False}),
+            "prev_at": (prev["as_of"] if prev else None),
         },
         "entries": out_entries,
         "teams": teams_tbl,
         "best_picks": best,
         "champion": champ,
         "golden_boot": gb,
+        "groups": groups or [],
         "field": {
             "n_entries": E,
             "most_picked": [{"team": t, "count": c,
@@ -556,6 +665,10 @@ def main():
                          "skip the refresh if the monthly budget would drop below it")
     ap.add_argument("--no-results", action="store_true",
                     help="ignore data/results.json (force the pre-tournament sim)")
+    ap.add_argument("--prev-url", default=PREV_SIM_URL,
+                    help="previous sim.json URL to diff win odds against (momentum)")
+    ap.add_argument("--no-prev", action="store_true",
+                    help="skip the momentum diff against the previous build")
     args = ap.parse_args()
 
     if args.refresh_odds:
@@ -617,11 +730,13 @@ def main():
     champ = build_champion(sim, teams)
     gb = build_golden_boot(sim, teams, players, entries,
                            real_team_goals=rtg, real_player_goals=rpg)
+    groups = build_groups(teams, sim, res)
+    prev = None if args.no_prev else fetch_prev(args.prev_url)
 
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     payload = build_payload(entries, scores, pool, paths, teams_tbl, best, champ,
                             gb, actual_own, teams, beta, n_full, now_iso,
-                            finals=finals, res=res)
+                            finals=finals, res=res, groups=groups, prev=prev)
 
     # ---- self-checks ----
     wsum = float(pool["win_prob"].sum())

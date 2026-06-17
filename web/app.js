@@ -137,9 +137,72 @@ function render() {
   renderChampion();
   renderBestPicks();
   renderLeaderboard();
+  renderMovers();
+  renderGroups();
   renderTeams();
   renderBoot();
   renderFooter();
+}
+
+function renderMovers() {
+  const sec = $("#movers");
+  const ents = state.merged.filter((e) => e.delta_win != null);
+  if (!ents.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const pa = state.sim.meta.prev_at ? Date.parse(state.sim.meta.prev_at) : NaN;
+  if (!isNaN(pa)) {
+    const mins = Math.max(0, Math.round((Date.now() - pa) / 60000));
+    $("#movers-tag").textContent = "since " + (mins < 90 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`);
+  }
+  const sorted = [...ents].sort((a, b) => b.delta_win - a.delta_win);
+  const up = sorted.filter((e) => e.delta_win > 0.0002).slice(0, 6);
+  const down = sorted.filter((e) => e.delta_win < -0.0002).slice(-6).reverse();
+  const row = (e) => `<div class="mv-row">` +
+    `<span class="mv-name">${esc(e.name)}</span>` +
+    `<span class="mv-win">${pct(e.win_prob)}</span>` +
+    `<span class="mv-d ${e.delta_win > 0 ? "up" : "down"}">${e.delta_win > 0 ? "▲" : "▼"}` +
+    `${Math.abs(e.delta_win * 100).toFixed(1)}pp${e.rank_delta ? ` · ${e.rank_delta > 0 ? "+" : ""}${e.rank_delta}` : ""}</span></div>`;
+  $("#movers-body").innerHTML =
+    `<div class="mv-col"><div class="mv-h up">▲ Climbing</div>` +
+    `${up.map(row).join("") || '<div class="gnone">no risers this update</div>'}</div>` +
+    `<div class="mv-col"><div class="mv-h down">▼ Falling</div>` +
+    `${down.map(row).join("") || '<div class="gnone">no fallers this update</div>'}</div>`;
+}
+
+function renderGroups() {
+  const groups = state.sim.groups || [];
+  const cond = state.sim.meta.results && state.sim.meta.results.conditional;
+  $("#groups-tag").textContent = cond ? "live standings" : "advance odds";
+  if (!groups.length) {
+    $("#groups-body").innerHTML = `<div class="skeleton">No group data.</div>`;
+    return;
+  }
+  $("#groups-body").innerHTML = groups.map((g) => {
+    const rows = g.teams.map((t, i) => {
+      const adv = i < 2 ? " adv" : "";
+      const out = t.status === "out" ? " gout" : "";
+      const end = t.status === "in"
+        ? `<td class="gend in" title="Through to the knockouts">✓ in</td>`
+        : t.status === "out"
+        ? `<td class="gend out" title="Eliminated">out</td>`
+        : `<td class="gend live" title="Modeled chance to reach the knockouts">${t.reach}%</td>`;
+      return `<tr class="${adv}${out}">
+        <td class="pos">${i + 1}</td>
+        <td class="gflag">${getFlag(t.name)}</td>
+        <td class="gname" title="${esc(t.name)} · ${t.w}W ${t.d}D ${t.l}L · GF ${t.gf} GA ${t.ga}">${esc(t.name)}</td>
+        <td class="gnum">${t.gd > 0 ? "+" + t.gd : t.gd}</td>
+        <td class="gpts">${t.pts}</td>${end}</tr>`;
+    }).join("");
+    const scores = (g.matches && g.matches.length)
+      ? `<div class="gscores">${g.matches.map((m) =>
+          `<div class="gscore"><span class="h">${esc(m.home)}${getFlag(m.home)}</span>` +
+          `<span class="sc">${m.hg}–${m.ag}</span>` +
+          `<span class="a">${getFlag(m.away)}${esc(m.away)}</span></div>`).join("")}</div>`
+      : (cond ? `<div class="gnone">no matches played yet</div>` : "");
+    return `<div class="gcard"><div class="gh"><span class="gl">Group ${esc(g.letter)}</span>` +
+      `<span class="gsub">${cond ? "gd · pts · adv" : "advance %"}</span></div>` +
+      `<table class="gtable"><tbody>${rows}</tbody></table>${scores}</div>`;
+  }).join("");
 }
 
 function renderProvenance() {
@@ -284,9 +347,13 @@ function renderLeaderboard() {
     const rank = i + 1;
     // medals only make sense for the standings view
     const g = (state.sortKey === "live" && rank <= 3) ? ` g${rank}` : "";
+    const dw = e.delta_win;
+    const dchip = (dw != null && Math.abs(dw) >= 0.0005)
+      ? `<span class="dch ${dw > 0 ? "up" : "down"}" title="Win-odds change since the last update">${dw > 0 ? "▲" : "▼"}${Math.abs(dw * 100).toFixed(1)}</span>`
+      : "";
     const win = e.win_prob != null
       ? `<div class="winbar"><span class="track"><i style="width:${(e.win_prob / maxWin) * 100}%"></i></span>
-         <span class="wv">${pct(e.win_prob)}</span></div>`
+         <span class="wv">${pct(e.win_prob)}${dchip}</span></div>`
       : `<div class="winbar"><span class="wv muted">—</span></div>`;
     const warn = e.unmapped_tiers && e.unmapped_tiers.length
       ? `<span class="warn" title="Tier(s) ${e.unmapped_tiers.join(",")} not matched to a team">!${e.unmapped_tiers.length}</span>` : "";
@@ -325,6 +392,35 @@ function updateSortHeaders() {
   });
 }
 
+const STAT_TIP = {
+  "Win pool": "Modeled chance you finish 1st in the pool",
+  "Top 3": "Chance you finish in the top 3",
+  "Avg finish": "Your average finishing position across all simulations",
+  "Best case": "The highest final score your lineup can still reach",
+  "Guaranteed": "Points already locked in — your minimum final score",
+  "Champ when you win": "Who lifts the World Cup in most of your winning simulations",
+  "Typical winning score": "Median final score in the sims where you win",
+  "Chief rival": "The entry most often ahead of you when you finish 2nd",
+};
+
+function rivalWhy(p) {
+  const r = p.chief_rival;
+  if (!r) return "";
+  const fl = (ns) => ns.map((n) => `${getFlag(n)} ${esc(n)}`).join(", ");
+  let why = `<b>${esc(r.name)}</b> is ahead of you ${r.pct}% of the time you finish 2nd. `;
+  why += (r.shared && r.shared.length)
+    ? `You both have ${fl(r.shared)} (you rise and fall together there). `
+    : `You share no picks, so it's a clean head-to-head. `;
+  if (r.rival_edge && r.rival_edge.length)
+    why += `Their edge teams: <span class="red">${fl(r.rival_edge)}</span>. `;
+  if (r.decisive)
+    why += `The biggest swing is <b>Tier ${r.decisive.tier}</b> — their ${esc(r.decisive.rival_team)} ` +
+      `averages <b class="red">+${r.decisive.gap}</b> over your ${esc(r.decisive.your_team)} ` +
+      `in the sims where they beat you.`;
+  return `<div class="rival-why"><span class="ch">Why ${esc(r.name)} is your rival</span>` +
+    `<p>${why}</p></div>`;
+}
+
 function renderDetail(e) {
   if (!e.path)
     return `<tr class="detail"><td colspan="7"><div class="detail-inner">
@@ -355,7 +451,9 @@ function renderDetail(e) {
     <div>
       <div class="path-summary"><span class="lead">Path to victory</span>${esc(p.summary)}</div>
       <div class="path-stats">${stats.map((s) =>
-        `<div class="pstat"><div class="k">${esc(s.k)}</div><div class="v${s.acc ? " acc" : ""}">${s.v}</div></div>`).join("")}</div>
+        `<div class="pstat" title="${esc(STAT_TIP[s.k] || "")}"><div class="k">${esc(s.k)}</div>` +
+        `<div class="v${s.acc ? " acc" : ""}">${s.v}</div></div>`).join("")}</div>
+      ${rivalWhy(p)}
     </div>
     <div class="carries"><div class="ch">Points carried (when you win)</div>${carries}</div>
   </div></td></tr>`;
@@ -412,7 +510,7 @@ function renderBoot() {
       <span class="wbar"><i style="width:${(r.win / max) * 100}%"></i></span>
       <div class="bval">
         <span class="winp">${r.win}%</span>
-        <div class="own-tag">${r.exp_goals} xG · ${r.p_6plus}% 6+</div></div>
+        <div class="own-tag" title="Goals scored so far · expected goals remaining · chance of 6+ total">${r.current} now · +${r.remaining} exp · ${r.p_6plus}% 6+</div></div>
     </div>`).join("");
 }
 

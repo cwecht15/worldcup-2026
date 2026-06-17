@@ -24,6 +24,7 @@
   <nav class="nav">
     <a href="#leaderboard">Leaderboard</a>
     <a href="#champion">Champion</a>
+    <a href="#groups">Groups</a>
     <a href="#bestpicks">Best Picks</a>
     <a href="#teams">Teams</a>
     <a href="#boot">Golden Boot</a>
@@ -72,6 +73,24 @@
       <tbody id="lb-body"></tbody>
     </table></div>
     <p class="disclaimer" id="lb-disclaimer"></p>
+  </section>
+
+  <!-- MOMENTUM (win-odds movers since the previous update) -->
+  <section class="card wide" id="movers" hidden>
+    <div class="card-head">
+      <h2>Momentum <span class="muted">win-odds movers</span></h2>
+      <span class="tag" id="movers-tag">since last update</span>
+    </div>
+    <div id="movers-body" class="mv-grid"></div>
+  </section>
+
+  <!-- GROUPS -->
+  <section class="card wide" id="groups">
+    <div class="card-head">
+      <h2>Groups <span class="muted">standings &amp; results</span></h2>
+      <span class="tag" id="groups-tag">advance odds</span>
+    </div>
+    <div id="groups-body" class="group-grid"></div>
   </section>
 
   <!-- TEAM VALUE EXPLORER -->

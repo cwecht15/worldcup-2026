@@ -220,6 +220,60 @@ tr.detail td{padding:0;border-bottom:1px solid var(--line-soft)}
 .tcard .lev{margin-top:8px;font-family:var(--mono);font-size:10.5px;text-align:right}
 .lev.over{color:var(--red)}.lev.under{color:var(--acc)}
 
+/* ---------- momentum / movers ---------- */
+.mv-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:620px){.mv-grid{grid-template-columns:1fr}}
+.mv-col{display:flex;flex-direction:column;gap:2px}
+.mv-h{font-family:var(--mono);font-size:10px;letter-spacing:1.2px;text-transform:uppercase;
+  padding-bottom:6px;margin-bottom:4px;border-bottom:1px solid var(--line-soft)}
+.mv-h.up{color:var(--acc)}.mv-h.down{color:var(--red)}
+.mv-row{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:10px;
+  padding:6px 4px;border-bottom:1px solid var(--line-soft)}
+.mv-row:last-child{border-bottom:0}
+.mv-name{font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mv-win{font-family:var(--mono);font-size:12px;color:var(--txt-dim)}
+.mv-d{font-family:var(--mono);font-size:12px;font-weight:600;min-width:74px;text-align:right}
+.mv-d.up{color:var(--acc)}.mv-d.down{color:var(--red)}
+.dch{font-family:var(--mono);font-size:10px;font-weight:600;margin-left:5px}
+.dch.up{color:var(--acc)}.dch.down{color:var(--red)}
+
+/* ---------- groups ---------- */
+.group-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px}
+.gcard{background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--line-soft);
+  border-radius:11px;padding:12px 13px}
+.gcard .gh{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px}
+.gcard .gh .gl{font-family:var(--disp);font-weight:600;font-size:14px}
+.gcard .gh .gsub{font-family:var(--mono);font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--txt-mute)}
+.gtable{width:100%;border-collapse:collapse;font-size:12px}
+.gtable td{padding:3px 3px;border-bottom:1px solid var(--line-soft)}
+.gtable tr:last-child td{border-bottom:0}
+.gtable .pos{width:15px;font-family:var(--mono);font-size:10px;color:var(--txt-mute);text-align:center}
+.gtable tr.adv .pos{color:var(--acc);font-weight:700}
+.gtable .gflag{width:22px}.gtable .gflag .flagimg{height:13px;width:18px}
+.gtable .gname{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:96px}
+.gtable tr.gout .gname{color:var(--txt-mute);text-decoration:line-through;text-decoration-color:rgba(255,77,109,.6)}
+.gtable .gnum{font-family:var(--mono);text-align:right;color:var(--txt-dim);font-size:11px}
+.gtable .gpts{font-family:var(--mono);text-align:right;color:var(--txt);font-weight:600}
+.gtable .gend{text-align:right;font-family:var(--mono);font-size:10.5px;white-space:nowrap}
+.gtable .gend.live{color:var(--cyan)}.gtable .gend.in{color:var(--acc)}.gtable .gend.out{color:var(--red)}
+.gscores{margin-top:9px;padding-top:8px;border-top:1px solid var(--line-soft);
+  display:flex;flex-direction:column;gap:4px}
+.gscore{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:7px;font-size:11px;color:var(--txt-dim)}
+.gscore .h{text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gscore .a{text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gscore .sc{font-family:var(--mono);color:var(--txt);font-weight:600;background:var(--bg-2);
+  border:1px solid var(--line-soft);border-radius:5px;padding:1px 6px}
+.gscore .flagimg{height:12px;width:16px;vertical-align:-0.1em;margin:0 3px}
+.gnone{font-size:11px;color:var(--txt-mute);margin-top:8px;font-family:var(--mono)}
+
+/* ---------- chief-rival explainer (path detail) ---------- */
+.rival-why{margin-top:12px;padding-top:11px;border-top:1px solid var(--line-soft)}
+.rival-why .ch{font-family:var(--mono);font-size:9.5px;letter-spacing:1px;text-transform:uppercase;
+  color:var(--txt-mute);display:block;margin-bottom:5px}
+.rival-why p{margin:0;font-size:12.5px;line-height:1.55;color:var(--txt-dim)}
+.rival-why b{color:var(--txt)}
+.rival-why .red{color:var(--red)}.rival-why .grn{color:var(--acc)}
+
 /* ---------- golden boot ---------- */
 .boot-row{display:grid;grid-template-columns:26px 1.4fr 1fr 120px;align-items:center;gap:12px;
   padding:9px 6px;border-bottom:1px solid var(--line-soft)}

@@ -92,6 +92,7 @@ class Results:
         # real goals already scored
         self.real_team_goals = np.zeros(n, dtype=np.int32)
         self.real_player_goals = {}    # player name -> {"team", "goals", "team_idx"}
+        self.matches = []              # parsed completed matches (for standings/scores)
         self.unmatched = []            # team names we couldn't resolve
 
     def fixed(self):
@@ -109,6 +110,8 @@ class Results:
         self.winner[code] = winner_idx if round_key != "GROUP" else -1
         self.real_team_goals[i] += gi
         self.real_team_goals[j] += gj
+        self.matches.append({"i": i, "j": j, "gi": int(gi), "gj": int(gj),
+                             "round": round_key})
         self.n_matches += 1
 
 
