@@ -46,7 +46,8 @@ TEAM_ALIASES = {
     "congodr": "DR Congo", "drcongo": "DR Congo", "irancng": "DR Congo",
     "iriran": "Iran", "iran": "Iran", "iranislamicrepublic": "Iran",
     "uzbekistan": "Uzbekistan", "capeverde": "Cape Verde",
-    "caboverde": "Cape Verde", "saudiarabia": "Saudi Arabia",
+    "caboverde": "Cape Verde", "capeverdeislands": "Cape Verde",
+    "saudiarabia": "Saudi Arabia",
     "southafrica": "South Africa", "newzealand": "New Zealand",
 }
 
