@@ -56,18 +56,18 @@
   <!-- LEADERBOARD -->
   <section class="card wide" id="leaderboard">
     <div class="card-head">
-      <h2>Leaderboard <span class="muted">live points · projected win %</span></h2>
+      <h2>Leaderboard <span class="muted">click a column to sort</span></h2>
       <span class="tag">live + model</span>
     </div>
     <div class="lb-wrap"><table class="lb" id="lb">
       <thead><tr>
         <th class="c-rank">#</th>
-        <th class="c-name">Entry</th>
+        <th class="c-name sortable" data-sort="name">Entry<span class="sind"></span></th>
         <th class="c-picks">Picks (T1–T6)</th>
-        <th class="c-num">Live</th>
-        <th class="c-num">Proj</th>
-        <th class="c-win">Win %</th>
-        <th class="c-boot">Golden Boot</th>
+        <th class="c-num sortable" data-sort="live">Live<span class="sind"></span></th>
+        <th class="c-num sortable" data-sort="proj">Proj<span class="sind"></span></th>
+        <th class="c-win sortable" data-sort="win">Win %<span class="sind"></span></th>
+        <th class="c-boot sortable" data-sort="boot">Golden Boot<span class="sind"></span></th>
       </tr></thead>
       <tbody id="lb-body"></tbody>
     </table></div>

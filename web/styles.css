@@ -149,6 +149,11 @@ table.lb{width:100%;border-collapse:collapse;min-width:760px}
 .lb thead th{font-family:var(--mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;
   color:var(--txt-mute);text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);font-weight:500}
 .lb th.c-num,.lb th.c-win{text-align:right}
+.lb th.sortable{cursor:pointer;user-select:none;transition:color .12s;white-space:nowrap}
+.lb th.sortable:hover{color:var(--txt)}
+.lb th.sorted{color:var(--acc)}
+.lb th .sind{display:inline-block;width:0;overflow:hidden;margin-left:4px;opacity:.9}
+.lb th.sorted .sind{width:auto}
 .lb tbody tr.row{border-bottom:1px solid var(--line-soft);cursor:pointer;transition:background .12s}
 .lb tbody tr.row:hover{background:var(--panel-2)}
 .lb td{padding:9px 10px;vertical-align:middle}

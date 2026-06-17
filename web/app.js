@@ -12,9 +12,21 @@ const REFRESH = 60; // seconds, live sheet poll
 
 const state = {
   sim: null, live: null, merged: [],
+  sortKey: "live", sortDir: "desc",
   tierFilter: "all", teamSort: "ev",
   open: new Set(), countdown: REFRESH,
 };
+
+// how each sortable column reads a value off an entry
+const SORT_VAL = {
+  name: (e) => (e.name || "").toLowerCase(),
+  live: (e) => e.live_total ?? -1,
+  proj: (e) => e.proj_total ?? -1,
+  win: (e) => e.win_prob ?? -1,
+  boot: (e) => (e.boot_pick || "~").toLowerCase(), // blanks sort last
+};
+// default direction when you first click a column
+const SORT_DEFAULT_DIR = { name: "asc", boot: "asc", live: "desc", proj: "desc", win: "desc" };
 
 /* ---------- helpers ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -256,14 +268,22 @@ function renderBestPicks() {
 }
 
 function renderLeaderboard() {
-  // fixed ranking by live points (current standings), tie-broken by projected win %
-  const rows = [...state.merged]
-    .sort((a, b) => b.live_total - a.live_total || (b.win_prob ?? -1) - (a.win_prob ?? -1));
+  const val = SORT_VAL[state.sortKey] || SORT_VAL.live;
+  const dir = state.sortDir === "asc" ? 1 : -1;
+  const rows = [...state.merged].sort((a, b) => {
+    const va = val(a), vb = val(b);
+    let c = typeof va === "string" ? va.localeCompare(vb) : va - vb;
+    c *= dir;
+    if (c) return c;
+    return (b.win_prob ?? -1) - (a.win_prob ?? -1); // stable tiebreak
+  });
+  updateSortHeaders();
   const maxWin = Math.max(0.01, ...rows.map((r) => r.win_prob || 0));
 
   const html = rows.map((e, i) => {
     const rank = i + 1;
-    const g = rank <= 3 ? ` g${rank}` : "";
+    // medals only make sense for the standings view
+    const g = (state.sortKey === "live" && rank <= 3) ? ` g${rank}` : "";
     const win = e.win_prob != null
       ? `<div class="winbar"><span class="track"><i style="width:${(e.win_prob / maxWin) * 100}%"></i></span>
          <span class="wv">${pct(e.win_prob)}</span></div>`
@@ -288,9 +308,21 @@ function renderLeaderboard() {
     return main + detail;
   }).join("");
   $("#lb-body").innerHTML = html || `<tr><td colspan="7" class="skeleton">No entries.</td></tr>`;
+  const LBL = { name: "entry name", live: "live points", proj: "projected final",
+                win: "win %", boot: "Golden Boot pick" };
   $("#lb-disclaimer").innerHTML =
-    `Ranked by <b>live points</b> (current standings). The <b>Win %</b> column is each entry's ` +
-    `modeled chance of winning the pool — click any entry for its path to victory.`;
+    `Sorted by <b>${LBL[state.sortKey]}</b> (${state.sortDir === "asc" ? "ascending" : "descending"}). ` +
+    `Click any column header to re-sort, or a row for its path to victory. ` +
+    `Win % is each entry's modeled chance of winning the pool.`;
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll("#lb thead th.sortable").forEach((th) => {
+    const active = th.dataset.sort === state.sortKey;
+    th.classList.toggle("sorted", active);
+    const sind = th.querySelector(".sind");
+    if (sind) sind.textContent = active ? (state.sortDir === "asc" ? "▲" : "▼") : "";
+  });
 }
 
 function renderDetail(e) {
@@ -417,6 +449,16 @@ function wire() {
     if (state.open.has(name)) state.open.delete(name); else state.open.add(name);
     renderLeaderboard();
   });
+  const lbHead = document.querySelector("#lb thead");
+  if (lbHead) lbHead.addEventListener("click", (ev) => {
+    const th = ev.target.closest("th.sortable");
+    if (!th) return;
+    const key = th.dataset.sort;
+    if (state.sortKey === key)
+      state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+    else { state.sortKey = key; state.sortDir = SORT_DEFAULT_DIR[key] || "desc"; }
+    renderLeaderboard();
+  });
   $("#team-sort").addEventListener("click", (ev) => {
     const b = ev.target.closest("button"); if (!b) return;
     state.teamSort = b.dataset.tsort;
@@ -457,6 +499,13 @@ async function init() {
     return;
   }
   merge();
+  // optional shareable sort: ?sort=win|live|proj|name|boot[&dir=asc|desc]
+  const sp = new URLSearchParams(location.search);
+  if (sp.get("sort") && SORT_VAL[sp.get("sort")]) {
+    state.sortKey = sp.get("sort");
+    state.sortDir = sp.get("dir") === "asc" ? "asc"
+      : sp.get("dir") === "desc" ? "desc" : (SORT_DEFAULT_DIR[state.sortKey] || "desc");
+  }
   render();
   // deep link: #e=<entry name> opens that entry's path to victory
   if (location.hash.startsWith("#e=")) {
