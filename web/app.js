@@ -12,7 +12,7 @@ const REFRESH = 60; // seconds, live sheet poll
 
 const state = {
   sim: null, live: null, merged: [],
-  sort: "live", tierFilter: "all", teamSort: "ev",
+  tierFilter: "all", teamSort: "ev",
   open: new Set(), countdown: REFRESH,
 };
 
@@ -232,11 +232,9 @@ function renderBestPicks() {
 }
 
 function renderLeaderboard() {
-  const rows = [...state.merged];
-  if (state.sort === "win")
-    rows.sort((a, b) => (b.win_prob ?? -1) - (a.win_prob ?? -1) || b.live_total - a.live_total);
-  else
-    rows.sort((a, b) => b.live_total - a.live_total || (b.win_prob ?? -1) - (a.win_prob ?? -1));
+  // fixed ranking by live points (current standings), tie-broken by projected win %
+  const rows = [...state.merged]
+    .sort((a, b) => b.live_total - a.live_total || (b.win_prob ?? -1) - (a.win_prob ?? -1));
   const maxWin = Math.max(0.01, ...rows.map((r) => r.win_prob || 0));
 
   const html = rows.map((e, i) => {
@@ -265,8 +263,8 @@ function renderLeaderboard() {
   }).join("");
   $("#lb-body").innerHTML = html || `<tr><td colspan="7" class="skeleton">No entries.</td></tr>`;
   $("#lb-disclaimer").innerHTML =
-    `Sorted by <b>${state.sort === "win" ? "modeled win %" : "live points"}</b>. ` +
-    `Click any entry for its path to victory. Win % assumes the full tournament is replayed from current odds.`;
+    `Ranked by <b>live points</b> (current standings). The <b>Win %</b> column is each entry's ` +
+    `modeled chance of winning the pool — click any entry for its path to victory.`;
 }
 
 function renderDetail(e) {
@@ -375,12 +373,6 @@ function wire() {
     if (state.open.has(name)) state.open.delete(name); else state.open.add(name);
     renderLeaderboard();
   });
-  document.querySelectorAll(".sort-toggle button").forEach((b) =>
-    b.addEventListener("click", () => {
-      state.sort = b.dataset.sort;
-      document.querySelectorAll(".sort-toggle button").forEach((x) => x.classList.toggle("active", x === b));
-      renderLeaderboard();
-    }));
   $("#team-sort").addEventListener("click", (ev) => {
     const b = ev.target.closest("button"); if (!b) return;
     state.teamSort = b.dataset.tsort;

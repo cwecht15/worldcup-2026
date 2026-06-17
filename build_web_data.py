@@ -517,12 +517,26 @@ def main():
     ap.add_argument("--sheet-csv", default=SHEET_CSV_URL)
     ap.add_argument("--M", type=int, default=20)
     ap.add_argument("--gamma", type=float, default=1.5)
+    ap.add_argument("--odds-reserve", type=int, default=20,
+                    help="keep at least this many Odds API requests in reserve; "
+                         "skip the refresh if the monthly budget would drop below it")
     args = ap.parse_args()
 
     if args.refresh_odds:
-        print("[odds] refreshing from The Odds API...")
-        fetch_odds.update_csv(fetch_odds.fetch())
-        fetch_odds.fetch_match_odds()
+        # free-tier guard: a refresh costs 2 requests; check the (free) budget first
+        NEED = 2
+        remaining = fetch_odds.requests_remaining()
+        if remaining is not None and remaining < NEED + args.odds_reserve:
+            print(f"[odds] only {remaining} requests left this month "
+                  f"(need {NEED} + {args.odds_reserve} reserve) -> SKIPPING refresh; "
+                  f"building from existing odds in data/teams.csv")
+        else:
+            if remaining is not None:
+                print(f"[odds] {remaining} requests remaining; refreshing (uses {NEED})...")
+            else:
+                print("[odds] refreshing from The Odds API...")
+            fetch_odds.update_csv(fetch_odds.fetch())
+            fetch_odds.fetch_match_odds()
 
     n_full = args.n if args.n is not None else (8000 if args.quick else 200_000)
     print(f"[build] running engine (n_sims={n_full:,})...")

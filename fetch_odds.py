@@ -23,6 +23,9 @@ DATA = os.path.join(os.path.dirname(__file__), "data")
 KEY_FILE = os.path.join(DATA, ".odds_api_key")
 SPORT = "soccer_fifa_world_cup_winner"
 MATCH_SPORT = "soccer_fifa_world_cup"
+# The /sports endpoint is FREE (does not count against the monthly quota) and
+# every response carries the x-requests-remaining header -> use it as a preflight.
+SPORTS_URL = "https://api.the-odds-api.com/v4/sports/"
 
 # The Odds API team name -> our teams.csv name (only where they differ)
 NAME_MAP = {
@@ -42,6 +45,23 @@ def get_key():
         sys.exit(f"No key found. Put your The Odds API key in {KEY_FILE}")
     # utf-8-sig strips a BOM if present; strip() drops whitespace/newlines
     return open(KEY_FILE, encoding="utf-8-sig").read().strip()
+
+
+def requests_remaining(key=None):
+    """Free preflight: how many Odds API requests are left this month.
+
+    Hits the /sports endpoint, which does NOT count against the quota, and reads
+    the x-requests-remaining header.  Returns an int, or None if unknown.
+    """
+    try:
+        key = key or get_key()
+        url = f"{SPORTS_URL}?apiKey={key}"
+        with urllib.request.urlopen(url, timeout=30) as r:
+            rem = r.headers.get("x-requests-remaining")
+        return int(float(rem)) if rem is not None else None
+    except Exception as e:
+        print(f"[odds] could not check remaining quota: {e}")
+        return None
 
 
 def fetch():
