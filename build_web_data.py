@@ -28,7 +28,7 @@ import urllib.request
 import numpy as np
 
 from run import build_sim
-from wcpool import model, scoring, optimize, golden_boot, tiebreaker, wcdata
+from wcpool import model, scoring, optimize, golden_boot, tiebreaker, wcdata, results
 import fetch_odds
 
 
@@ -348,13 +348,33 @@ def _path_summary(ent, linchpin, champ, rival, can_win):
     return ("; ".join(bits) + ".") if bits else "Balanced lineup with no single linchpin."
 
 
+def compute_finals(entries, sim):
+    """Per-entry guaranteed (floor) and best-case (ceiling) final totals, plus a
+    mathematical 'blocked from winning' flag: an entry is blocked when its ceiling
+    can't reach the current leader's locked-in floor.  Uses the conditional sim's
+    per-team min/max, so it is automatically all-False before any results exist."""
+    tp_min = sim.total_pts.min(axis=0)
+    tp_max = sim.total_pts.max(axis=0)
+    floors, ceils = [], []
+    for ent in entries:
+        picks = [i for i in ent["picks"] if i is not None]
+        floors.append(float(tp_min[picks].sum()) if picks else 0.0)
+        ceils.append(float(tp_max[picks].sum()) if picks else 0.0)
+    leader_floor = max(floors) if floors else 0.0
+    blocked = [c < leader_floor for c in ceils]
+    return {"floors": floors, "ceils": ceils, "blocked": blocked,
+            "leader_floor": leader_floor}
+
+
 # ---------------------------------------------------------------------------
 # Aggregate sim outputs
 # ---------------------------------------------------------------------------
-def build_team_table(sim, teams, entries, gamma):
+def build_team_table(sim, teams, entries, gamma, results_present=False):
     ev_df = optimize.ev_table(sim, teams)
     pop = optimize.popularity(teams, gamma)                        # market-implied own
     n = max(len(entries), 1)
+    tp_min = sim.total_pts.min(axis=0)     # points a team has locked in (accrued)
+    tp_max = sim.total_pts.max(axis=0)     # best-case final for that team
     actual = np.zeros(teams.n)
     for ent in entries:
         for idx in ent["picks"]:
@@ -363,6 +383,8 @@ def build_team_table(sim, teams, entries, gamma):
     out = []
     for _, r in ev_df.iterrows():
         i = teams.idx[r["team"]]
+        # eliminated = no remaining upside (only meaningful once results exist)
+        eliminated = bool(results_present and tp_max[i] <= tp_min[i])
         out.append({
             "name": r["team"], "tier": int(r["tier"]), "group": r["group"],
             "ev": round(float(r["ev"]), 2), "title": round(float(r["title%"]), 2),
@@ -373,6 +395,8 @@ def build_team_table(sim, teams, entries, gamma):
             "winSF": round(float(r["winSF%"]), 1),
             "implied_own": round(float(pop[i]), 4),
             "actual_own": round(actual[i] / n, 4),
+            "accrued": round(float(tp_min[i]), 1),
+            "out": eliminated,
         })
     return out, ev_df, actual
 
@@ -417,8 +441,11 @@ def build_champion(sim, teams):
             "finalists": finalists}
 
 
-def build_golden_boot(sim, teams, players_df, entries):
-    gb = golden_boot.simulate_golden_boot(sim, teams, players_df)
+def build_golden_boot(sim, teams, players_df, entries,
+                      real_team_goals=None, real_player_goals=None):
+    gb = golden_boot.simulate_golden_boot(
+        sim, teams, players_df,
+        real_team_goals=real_team_goals, real_player_goals=real_player_goals)
     n = max(len(entries), 1)
     own = {}
     for ent in entries:
@@ -438,7 +465,7 @@ def build_golden_boot(sim, teams, players_df, entries):
 # Assembly
 # ---------------------------------------------------------------------------
 def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
-                  actual_own, teams, beta, n_full, now_iso):
+                  actual_own, teams, beta, n_full, now_iso, finals=None, res=None):
     E = len(entries)
     # most-picked teams (by name)
     counts = {}
@@ -465,6 +492,9 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
             "exp_finish": round(float(pool["exp_finish"][e]), 2),
             "exp_points": round(float(pool["exp_points"][e]), 1),
             "proj_total": round(float(pool["exp_points"][e]), 1),
+            "blocked": bool(finals["blocked"][e]) if finals else False,
+            "max_final": round(finals["ceils"][e], 1) if finals else None,
+            "min_final": round(finals["floors"][e], 1) if finals else None,
             "path": paths[e],
         })
 
@@ -479,6 +509,9 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
                         "group_win": wcdata.GROUP_WIN_PTS,
                         "R32": 5, "R16": 7, "QF": 10, "SF": 15, "champion": 20},
             "max_single_team": int(scoring.MAX_SINGLE_TEAM),
+            "results": ({"conditional": True, "as_of": res.as_of,
+                         "matches_played": res.n_matches} if res
+                        else {"conditional": False}),
         },
         "entries": out_entries,
         "teams": teams_tbl,
@@ -495,6 +528,7 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
                              "total": leader_live["live_total"]}
                             if leader_live else None),
             "fair_share_pct": round(100.0 / E, 2) if E else 0.0,
+            "n_blocked": int(sum(finals["blocked"])) if finals else 0,
         },
     }
 
@@ -520,6 +554,8 @@ def main():
     ap.add_argument("--odds-reserve", type=int, default=20,
                     help="keep at least this many Odds API requests in reserve; "
                          "skip the refresh if the monthly budget would drop below it")
+    ap.add_argument("--no-results", action="store_true",
+                    help="ignore data/results.json (force the pre-tournament sim)")
     args = ap.parse_args()
 
     if args.refresh_odds:
@@ -538,13 +574,28 @@ def main():
             fetch_odds.update_csv(fetch_odds.fetch())
             fetch_odds.fetch_match_odds()
 
+    # live results (if present) condition the simulation on matches already played
+    teams0 = model.load_teams()
+    res = None if args.no_results else results.load_results(teams0)
+    fixed = res.fixed() if res else None
+    if res:
+        print(f"[results] conditioning on {res.n_matches} completed matches "
+              f"(as of {res.as_of})")
+        if res.unmatched:
+            print(f"[results] unmatched team names (ignored): {sorted(set(res.unmatched))}")
+    else:
+        print("[results] no data/results.json -> full-tournament (pre-results) sim")
+
     n_full = args.n if args.n is not None else (8000 if args.quick else 200_000)
     print(f"[build] running engine (n_sims={n_full:,})...")
     teams, players, _third, beta, _target, _strength, sim = build_sim(
-        quick=args.quick, n_full=n_full, verbose=True)
+        quick=args.quick, n_full=n_full, verbose=True, fixed=fixed)
 
-    # canonical Golden-Boot goals/players (filtered + reset) used everywhere below
-    gb_goals, gb_players = golden_boot.player_goals(sim, teams, players)
+    # canonical Golden-Boot goals/players (filtered + reset), goals-aware if live
+    rtg = res.real_team_goals if res else None
+    rpg = res.real_player_goals if res else None
+    gb_goals, gb_players = golden_boot.player_goals(
+        sim, teams, players, real_team_goals=rtg, real_player_goals=rpg)
 
     print("[sheet] fetching live entries...")
     headers, rows = fetch_sheet_rows(args.sheet_csv)
@@ -558,15 +609,19 @@ def main():
     scores = build_entry_scores(entries, sim)
     pool = resolve_pool(entries, scores, sim, gb_goals, gb_players)
     paths = build_paths(entries, scores, pool, sim, teams)
+    finals = compute_finals(entries, sim)
 
-    teams_tbl, ev_df, actual_own = build_team_table(sim, teams, entries, args.gamma)
+    teams_tbl, ev_df, actual_own = build_team_table(
+        sim, teams, entries, args.gamma, results_present=bool(res))
     best = build_best_picks(sim, teams, ev_df, args.M, args.gamma, args.quick)
     champ = build_champion(sim, teams)
-    gb = build_golden_boot(sim, teams, players, entries)
+    gb = build_golden_boot(sim, teams, players, entries,
+                           real_team_goals=rtg, real_player_goals=rpg)
 
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     payload = build_payload(entries, scores, pool, paths, teams_tbl, best, champ,
-                            gb, actual_own, teams, beta, n_full, now_iso)
+                            gb, actual_own, teams, beta, n_full, now_iso,
+                            finals=finals, res=res)
 
     # ---- self-checks ----
     wsum = float(pool["win_prob"].sum())
@@ -574,6 +629,11 @@ def main():
     proj = champ["projected"]
     assert proj == teams.names[int(np.argmax(sim.title_prob()))]
     print(f"[check] sum(win_prob)={wsum:.6f}  projected champion={proj}")
+    if res:
+        nb = sum(finals["blocked"])
+        elim = sum(1 for t in teams_tbl if t["out"])
+        print(f"[check] conditional sim: {elim} teams eliminated, "
+              f"{nb} entries blocked from winning")
     top = sorted(payload["entries"], key=lambda e: -e["win_prob"])[:5]
     print("[check] top 5 by pool win%:")
     for e in top:

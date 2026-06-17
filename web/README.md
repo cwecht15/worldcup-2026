@@ -8,11 +8,19 @@ value/leverage explorer, and the Golden Boot race.
 ## How it works
 
 ```
-The Odds API ─▶ data/teams.csv, data/match_odds.csv      (fetch_odds.py, scheduled)
-              build_web_data.py ──▶ web/data/sim.json     (engine + live sheet + scoring)
+The Odds API     ─▶ data/teams.csv, data/match_odds.csv   (fetch_odds.py, scheduled)
+football-data.org ─▶ data/results.json                    (fetch_results.py, scheduled)
+                  build_web_data.py ──▶ web/data/sim.json  (engine + live sheet + scoring)
 GitHub Pages serves web/  ──▶  browser
    browser reads:  web/data/sim.json  +  the live Google-Sheet CSV (polled every 60s)
 ```
+
+**Live results (conditional sim).** When `data/results.json` is present (completed
+matches + scorers from football-data.org), the simulation is *conditioned* on it:
+played matches are fixed and only the remaining games are simulated. That makes
+accrued points, win %, the goals-aware Golden Boot, and the **blocked-from-winning**
+flag all reflect where the tournament actually is. With no results file it runs the
+pre-tournament projection (footer says which mode is live).
 
 The heavy NumPy simulation can't run in the browser, so a Python builder pre-computes a compact
 `sim.json` and the static frontend overlays it on the live sheet (joined by entry name). Live
@@ -48,10 +56,12 @@ python -m http.server -d web 8901        # open http://127.0.0.1:8901
 
 1. Push this repo to GitHub.
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
-3. **Settings → Secrets and variables → Actions →** add `ODDS_API_KEY` (your The Odds API key).
+3. **Settings → Secrets and variables → Actions →** add `ODDS_API_KEY` (your The Odds API key)
+   and `FOOTBALL_DATA_KEY` (free key from football-data.org, for live results).
 4. The workflow `.github/workflows/build-and-deploy.yml` runs on a 6-hour cron (and on push /
-   manual dispatch), rebuilds `sim.json`, and deploys `web/`. Odds are refreshed only on the
-   scheduled runs (~2 API requests each — comfortably inside the free 500/month tier).
+   manual dispatch): it fetches live results, rebuilds `sim.json`, and deploys `web/`. Odds are
+   refreshed only on the scheduled runs (~2 API requests each — comfortably inside the free
+   500/month tier); a free-tier preflight skips the refresh if the monthly budget runs low.
 
 Without the secret the site still builds and deploys, using whatever odds are already in
 `data/teams.csv`.

@@ -118,7 +118,9 @@ function merge() {
 /* ---------- render ---------- */
 function render() {
   if (!state.sim) return;
+  state.elim = new Set((state.sim.teams || []).filter((t) => t.out).map((t) => t.name));
   renderProvenance();
+  renderResultsBanner();
   renderStatStrip();
   renderChampion();
   renderBestPicks();
@@ -136,8 +138,27 @@ function renderProvenance() {
     const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
     ago = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
   }
+  const tag = (m.results && m.results.conditional) ? "live results" : "pre-tournament";
   $("#provenance").textContent =
-    `${(m.n_sims / 1000).toLocaleString()}k sims · updated ${ago}`;
+    `${(m.n_sims / 1000).toLocaleString()}k sims · ${tag} · updated ${ago}`;
+}
+
+function renderResultsBanner() {
+  const el = $("#results-banner");
+  const r = (state.sim.meta && state.sim.meta.results) || {};
+  if (!r.conditional) { el.hidden = true; return; }
+  el.hidden = false;
+  const nOut = state.sim.teams.filter((t) => t.out).length;
+  const nBlk = (state.sim.field && state.sim.field.n_blocked) || 0;
+  const d = Date.parse(r.as_of);
+  const ds = isNaN(d) ? null
+    : new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  el.innerHTML =
+    `<span class="lead">Live</span>` +
+    `<span>Projections account for <b>${r.matches_played}</b> completed matches` +
+    `${ds ? ` (through <b>${esc(ds)}</b>)` : ""}.</span>` +
+    `<span class="sep">•</span><span><b>${nOut}</b> teams eliminated</span>` +
+    `<span class="sep">•</span><span><b>${nBlk}</b> ${nBlk === 1 ? "entry" : "entries"} blocked from winning</span>`;
 }
 
 function fmtPicksFlags(e) {
@@ -146,7 +167,10 @@ function fmtPicksFlags(e) {
   return `<div class="picks">${e.picks
     .map((p, i) => {
       const miss = e.unmapped_tiers && e.unmapped_tiers.includes(i + 1);
-      return `<span class="pk${miss ? " miss" : ""}" title="${esc(p || "—")}">${getFlag(p)}</span>`;
+      const out = state.elim && state.elim.has(p);
+      const cls = (miss ? " miss" : "") + (out ? " out" : "");
+      const tip = (p || "—") + (out ? " — eliminated" : "");
+      return `<span class="pk${cls}" title="${esc(tip)}">${getFlag(p)}</span>`;
     })
     .join("")}</div>`;
 }
@@ -246,12 +270,14 @@ function renderLeaderboard() {
       : `<div class="winbar"><span class="wv muted">—</span></div>`;
     const warn = e.unmapped_tiers && e.unmapped_tiers.length
       ? `<span class="warn" title="Tier(s) ${e.unmapped_tiers.join(",")} not matched to a team">!${e.unmapped_tiers.length}</span>` : "";
+    const blk = e.blocked
+      ? `<span class="badge-out" title="Can no longer catch the leader, even in the best case">out</span>` : "";
     const boot = e.boot_pick
       ? `<span class="fl">${getFlag((state.sim.golden_boot.race.find((p) => p.player === e.boot_pick) || {}).team)}</span>${esc(e.boot_pick)}`
       : "—";
-    const main = `<tr class="row${state.open.has(e.name) ? " open" : ""}" data-name="${esc(e.name)}">
+    const main = `<tr class="row${state.open.has(e.name) ? " open" : ""}${e.blocked ? " blocked" : ""}" data-name="${esc(e.name)}">
       <td class="c-rank"><span class="rankbadge${g}">${rank}</span></td>
-      <td class="c-name"><div class="ename"><span class="caret">▶</span>${esc(e.name)} ${warn}</div></td>
+      <td class="c-name"><div class="ename"><span class="caret">▶</span>${esc(e.name)} ${warn}${blk}</div></td>
       <td class="c-picks">${fmtPicksFlags(e)}</td>
       <td class="num">${e.live_total}</td>
       <td class="num proj">${e.proj_total != null ? e.proj_total : "—"}</td>
@@ -282,10 +308,13 @@ function renderDetail(e) {
       <span class="cv">${c.cond_pts}</span></div>`;
   }).join("");
   // each .v is pre-escaped safe HTML (may include a flag <img>)
+  const cond = state.sim.meta.results && state.sim.meta.results.conditional;
   const stats = [
     e.win_prob != null ? { k: "Win pool", v: pct(e.win_prob), acc: 1 } : null,
     e.p_top3 != null ? { k: "Top 3", v: pct(e.p_top3) } : null,
     e.exp_finish != null ? { k: "Avg finish", v: String(e.exp_finish) } : null,
+    cond && e.max_final != null ? { k: "Best case", v: String(e.max_final) } : null,
+    cond && e.min_final != null ? { k: "Guaranteed", v: String(e.min_final) } : null,
     p.champion_when_win ? { k: "Champ when you win", v: `${getFlag(p.champion_when_win.team)} ${esc(p.champion_when_win.team)} ${p.champion_when_win.pct}%` } : null,
     p.typical_winning_score ? { k: "Typical winning score", v: String(p.typical_winning_score) } : null,
     p.chief_rival ? { k: "Chief rival", v: `${esc(p.chief_rival.name)} (${p.chief_rival.pct}%)` } : null,
@@ -318,9 +347,10 @@ function renderTeams() {
     const levTxt = t.actual_own > t.implied_own
       ? `over-owned +${((t.actual_own - t.implied_own) * 100).toFixed(0)}pp`
       : `value −${((t.implied_own - t.actual_own) * 100).toFixed(0)}pp`;
-    return `<div class="tcard">
+    return `<div class="tcard${t.out ? " out" : ""}">
       <div class="top"><span class="fl">${getFlag(t.name)}</span><span class="nm">${esc(t.name)}</span>
-        <span class="tr">T${t.tier} · ${esc(t.group)}</span></div>
+        ${t.out ? `<span class="elim">out</span>`
+                : `<span class="tr">T${t.tier} · ${esc(t.group)}</span>`}</div>
       <div class="ev">EV <b>${t.ev}</b> · title ${t.title}% · KO ${t.reachKO}%</div>
       <div class="ownrow actual"><span class="ol">pool</span>
         <span class="ot"><i style="width:${(t.actual_own / maxOwn) * 100}%"></i></span>
@@ -362,6 +392,20 @@ function renderFooter() {
   ];
   $("#scoring-legend").innerHTML = items
     .map(([k, v]) => `<span class="sc">${k} <b>${v}</b></span>`).join("");
+
+  const cond = state.sim.meta.results && state.sim.meta.results.conditional;
+  $("#how-note").innerHTML = cond
+    ? `Projections are a Monte&nbsp;Carlo simulation <strong>conditioned on results so far</strong>: ` +
+      `completed matches are fixed and only the remaining games are simulated (calibrated to ` +
+      `DraftKings odds). <strong>Win&nbsp;%</strong> is each entry's modeled chance of finishing ` +
+      `first, Golden&nbsp;Boot tiebreak included. <strong>Blocked from winning</strong> means an ` +
+      `entry's best-case final score can no longer reach the current leader's locked-in total. ` +
+      `Live points come from the pool's Google&nbsp;Sheet.`
+    : `Projections come from a Monte&nbsp;Carlo simulation of the full 2026 bracket, calibrated to ` +
+      `DraftKings title &amp; match odds. <strong>Win&nbsp;%</strong> is each entry's modeled chance ` +
+      `of finishing first (Golden&nbsp;Boot tiebreak included). Before kickoff the model replays the ` +
+      `whole tournament from today's odds; once games are played it conditions on real results. ` +
+      `Live points come from the pool's Google&nbsp;Sheet.`;
 }
 
 /* ---------- interactions ---------- */

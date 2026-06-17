@@ -42,7 +42,10 @@ class SimResult:
 
 
 def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
-             strength=None):
+             strength=None, fixed=None):
+    """Monte Carlo of the bracket. If `fixed` is given (from results.Results.fixed()),
+    matches that have actually been played are forced to their real outcome and only
+    the remaining matches are simulated (a conditional simulation)."""
     rng = np.random.default_rng(seed)
     N = n_sims
     nteam = teams.n
@@ -70,6 +73,15 @@ def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
             la, lb = match_lambdas(eff_elo[members[a]], eff_elo[members[b]], beta, base)
             xa = rng.poisson(la, size=N)
             xb = rng.poisson(lb, size=N)
+            if fixed is not None:                       # force a completed group game
+                i, j = int(members[a]), int(members[b])
+                lo, hi = (i, j) if i < j else (j, i)
+                code = lo * nteam + hi
+                if fixed["present"][code]:
+                    goals_i = fixed["g_lo"][code] if i == lo else fixed["g_hi"][code]
+                    goals_j = fixed["g_hi"][code] if i == lo else fixed["g_lo"][code]
+                    xa = np.full(N, goals_i, dtype=xa.dtype)
+                    xb = np.full(N, goals_j, dtype=xb.dtype)
             awin = xa > xb
             bwin = xb > xa
             draw = ~(awin | bwin)
@@ -150,6 +162,19 @@ def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
         we_a = win_expectancy(ea, eb)
         pens_a = rng_ko.random(ga2.shape) < we_a
         a_wins = a_better | (still_tie & pens_a)
+
+        if fixed is not None:                           # force completed knockout games
+            lo = np.minimum(ta, tb); hi = np.maximum(ta, tb)
+            codes = lo * nteam + hi
+            pres = fixed["present"][codes]
+            if pres.any():
+                glo = fixed["g_lo"][codes]; ghi = fixed["g_hi"][codes]
+                win = fixed["winner"][codes]
+                ga_real = np.where(ta <= tb, glo, ghi)
+                gb_real = np.where(ta <= tb, ghi, glo)
+                ga2 = np.where(pres, ga_real, ga2)
+                gb2 = np.where(pres, gb_real, gb2)
+                a_wins = np.where(pres, win == ta, a_wins)
 
         winner = np.where(a_wins, ta, tb)
         # team goals scored this match

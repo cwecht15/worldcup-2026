@@ -1,4 +1,6 @@
 data/.odds_api_key
+data/.football_data_key
+data/results.json
 __pycache__/
 *.pyc
 *.log

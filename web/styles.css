@@ -241,6 +241,29 @@ tr.detail td{padding:0;border-bottom:1px solid var(--line-soft)}
 .skeleton{color:var(--txt-mute);font-family:var(--mono);font-size:12px;padding:20px;text-align:center}
 .err{color:var(--red);font-family:var(--mono);font-size:12px;padding:14px;text-align:center}
 
+/* ---------- live-results extras ---------- */
+.results-banner{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  background:linear-gradient(90deg,rgba(33,212,253,.10),rgba(0,230,118,.06));
+  border:1px solid var(--line);border-left:3px solid var(--cyan);
+  border-radius:12px;padding:11px 16px;font-size:13px}
+.results-banner .lead{font-family:var(--mono);font-size:10.5px;letter-spacing:1.5px;
+  text-transform:uppercase;color:var(--cyan);font-weight:600}
+.results-banner b{font-family:var(--mono);color:var(--txt)}
+.results-banner .sep{color:var(--txt-mute)}
+.picks .pk.out{position:relative;opacity:.5}
+.picks .pk.out::after{content:"";position:absolute;left:-1px;right:-1px;top:50%;
+  height:2px;background:var(--red);transform:rotate(-12deg);border-radius:2px}
+.badge-out{font-family:var(--mono);font-size:9px;letter-spacing:.5px;color:var(--red);
+  border:1px solid rgba(255,77,109,.45);background:rgba(255,77,109,.10);
+  border-radius:5px;padding:1px 5px;text-transform:uppercase}
+tr.row.blocked .ename{color:var(--txt-mute)}
+tr.row.blocked .num,tr.row.blocked .wv{opacity:.55}
+.tcard.out{opacity:.62}
+.tcard.out .nm{text-decoration:line-through;text-decoration-color:var(--red)}
+.tcard .elim{font-family:var(--mono);font-size:9.5px;letter-spacing:.5px;color:var(--red);
+  text-transform:uppercase;margin-left:auto;border:1px solid rgba(255,77,109,.4);
+  border-radius:6px;padding:2px 6px}
+
 /* ---------- flag images (sized to the wrapper's font-size) ---------- */
 .flagimg{height:1em;width:1.34em;object-fit:cover;display:inline-block;vertical-align:-0.16em;
   border-radius:2px;box-shadow:0 0 0 1px rgba(255,255,255,.1);background:var(--line-soft)}

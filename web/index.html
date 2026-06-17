@@ -35,6 +35,9 @@
 </header>
 
 <main>
+  <!-- RESULTS BANNER (only when the sim is conditioned on live results) -->
+  <section class="results-banner" id="results-banner" hidden></section>
+
   <!-- STAT STRIP -->
   <section class="stat-strip" id="statstrip" aria-label="Pool snapshot"></section>
 
@@ -97,13 +100,7 @@
 
 <footer class="footer">
   <div id="scoring-legend" class="scoring"></div>
-  <p class="fine">
-    Projections come from a Monte&nbsp;Carlo simulation of the full 2026 bracket, calibrated to
-    DraftKings title &amp; match odds. <strong>Win&nbsp;%</strong> is each entry's modeled chance of
-    finishing first (Golden&nbsp;Boot tiebreak included). The model replays the entire tournament
-    from today's odds — it does <em>not</em> account for results already completed. Live points come
-    straight from the pool's Google&nbsp;Sheet.
-  </p>
+  <p class="fine" id="how-note"></p>
   <p class="fine muted">Built on the <code>wcpool</code> engine · this is a model, not betting advice.</p>
 </footer>
 

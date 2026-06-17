@@ -51,6 +51,11 @@ jobs:
             echo "REFRESH=" >> "$GITHUB_ENV"
           fi
 
+      - name: Fetch live results (football-data.org)
+        env:
+          FOOTBALL_DATA_KEY: ${{ secrets.FOOTBALL_DATA_KEY }}
+        run: python fetch_results.py   # writes data/results.json if matches are in; no-op otherwise
+
       - name: Build sim.json
         run: python build_web_data.py $REFRESH --n 200000
 
