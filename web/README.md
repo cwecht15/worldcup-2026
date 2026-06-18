@@ -58,10 +58,11 @@ python -m http.server -d web 8901        # open http://127.0.0.1:8901
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
 3. **Settings → Secrets and variables → Actions →** add `ODDS_API_KEY` (your The Odds API key)
    and `FOOTBALL_DATA_KEY` (free key from football-data.org, for live results).
-4. The workflow `.github/workflows/build-and-deploy.yml` runs on a 6-hour cron (and on push /
-   manual dispatch): it fetches live results, rebuilds `sim.json`, and deploys `web/`. Odds are
-   refreshed only on the scheduled runs (~2 API requests each — comfortably inside the free
-   500/month tier); a free-tier preflight skips the refresh if the monthly budget runs low.
+4. The workflow `.github/workflows/build-and-deploy.yml` runs on a **game-aligned** cron — seven
+   sweeps across 19:00-07:00 UTC (when 2026 WC games actually finish), skipping the dead
+   07:00-18:00 UTC window — plus push / manual dispatch. Each run fetches live results, rebuilds
+   `sim.json`, and deploys `web/`. **Odds** are refreshed only twice a day (19:00 & 05:00 UTC,
+   ~120 requests/month) with a free-tier preflight that skips the refresh if the budget runs low.
 
 Without the secret the site still builds and deploys, using whatever odds are already in
 `data/teams.csv`.

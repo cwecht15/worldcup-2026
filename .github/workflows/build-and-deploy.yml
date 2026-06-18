@@ -5,8 +5,17 @@ name: Build & Deploy World Cup Pool Site
 # (to stay well inside the free 500-requests/month tier; ~2 requests per refresh).
 
 on:
+  # Aligned to actual 2026 WC game times: kickoffs are 16:00-04:00 UTC, so results
+  # land ~18:00 UTC through ~06:00 UTC. We sweep every ~2h across that window and
+  # skip the dead 07:00-18:00 UTC stretch (04:00-14:00 ET) when no games finish.
   schedule:
-    - cron: "0 */6 * * *"     # every 6 hours
+    - cron: "0 19 * * *"   # ~3pm ET  — first wave of games done
+    - cron: "0 21 * * *"   # ~5pm ET  — after the 19:00 UTC slot (the busiest)
+    - cron: "0 23 * * *"   # ~7pm ET
+    - cron: "0 1 * * *"    # ~9pm ET
+    - cron: "0 3 * * *"    # ~11pm ET
+    - cron: "0 5 * * *"    # ~1am ET
+    - cron: "0 7 * * *"    # ~3am ET  — final sweep, latest West-coast games
   workflow_dispatch:           # manual "Run workflow" button
   push:
     branches: [main]           # redeploy on frontend/engine changes (no odds refresh)
@@ -44,8 +53,11 @@ jobs:
           if [ -n "$ODDS_API_KEY" ]; then
             printf '%s' "$ODDS_API_KEY" > data/.odds_api_key
           fi
-          # only spend API quota on the scheduled (cron) runs
-          if [ "$EVENT" = "schedule" ] && [ -n "$ODDS_API_KEY" ]; then
+          # results fetch on every run, but only refresh ODDS twice a day (19:00 &
+          # 05:00 UTC) so the Odds API free tier stays comfortable (~120 req/month)
+          HOUR=$(date -u +%H)
+          if [ "$EVENT" = "schedule" ] && [ -n "$ODDS_API_KEY" ] \
+             && { [ "$HOUR" = "19" ] || [ "$HOUR" = "05" ]; }; then
             echo "REFRESH=--refresh-odds" >> "$GITHUB_ENV"
           else
             echo "REFRESH=" >> "$GITHUB_ENV"
