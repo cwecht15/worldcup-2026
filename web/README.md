@@ -3,7 +3,16 @@
 A static site that fuses the pool's **live Google-Sheet leaderboard** with **Monte-Carlo
 projections** from the `wcpool` engine: each entry's probability of winning the pool, expected
 final points, a path-to-victory breakdown, the champion projection, best picks per tier, a team
-value/leverage explorer, and the Golden Boot race.
+value/leverage explorer, the Golden Boot race, a **recent-results** feed showing who each finished
+game helped/hurt, an **upcoming-schedule** card, and a **data-freshness panel** (when odds and
+results last updated, and when each refreshes next).
+
+**Update cadence (sim.json keys).** `meta.results.as_of` is the last results fetch; `meta.odds_at`
+the last odds refresh (carried forward between builds until a refresh records a new one);
+`meta.schedule` holds the UTC sweep hours (mirrors the Actions cron) so the frontend can show the
+*next* update in the viewer's local time. `recent_results` and `schedule_upcoming` carry dated
+finished/upcoming fixtures; the frontend falls back to deriving both from the group standings when
+those arrays are absent (e.g. before the schedule feed has populated).
 
 ## How it works
 

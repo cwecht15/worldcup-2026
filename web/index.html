@@ -24,7 +24,9 @@
   <nav class="nav">
     <a href="#leaderboard">Leaderboard</a>
     <a href="#champion">Champion</a>
+    <a href="#recent">Results</a>
     <a href="#groups">Groups</a>
+    <a href="#schedule">Schedule</a>
     <a href="#bestpicks">Best Picks</a>
     <a href="#teams">Teams</a>
     <a href="#boot">Golden Boot</a>
@@ -38,6 +40,9 @@
 <main>
   <!-- RESULTS BANNER (only when the sim is conditioned on live results) -->
   <section class="results-banner" id="results-banner" hidden></section>
+
+  <!-- DATA FRESHNESS (last/next odds + results updates) -->
+  <section class="updates" id="updates" aria-label="Data freshness"></section>
 
   <!-- STAT STRIP -->
   <section class="stat-strip" id="statstrip" aria-label="Pool snapshot"></section>
@@ -84,6 +89,9 @@
     <div id="movers-body" class="mv-grid"></div>
   </section>
 
+  <!-- RECENT RESULTS (finished games + who they helped/hurt) -->
+  <section class="card wide" id="recent" hidden></section>
+
   <!-- GROUPS -->
   <section class="card wide" id="groups">
     <div class="card-head">
@@ -92,6 +100,9 @@
     </div>
     <div id="groups-body" class="group-grid"></div>
   </section>
+
+  <!-- UPCOMING SCHEDULE -->
+  <section class="card wide" id="schedule" hidden></section>
 
   <!-- TEAM VALUE EXPLORER -->
   <section class="card wide" id="teams">

@@ -10,6 +10,14 @@ const SHEET_CSV_URL =
 const SIM_URL = "./data/sim.json";
 const REFRESH = 60; // seconds, live sheet poll
 
+// Refresh cadence (UTC hours), mirrors .github/workflows/build-and-deploy.yml.
+// Overridden by sim.meta.schedule when the builder emits it. Results sweep ~every
+// 2h across the live window; odds refresh only twice a day.
+const RESULTS_SWEEP_UTC = [19, 21, 23, 1, 3, 5, 7];
+const ODDS_REFRESH_UTC = [19, 5];
+const ROUND_LABEL = { GROUP: "Group", R32: "Round of 32", R16: "Round of 16",
+  QF: "Quarterfinal", SF: "Semifinal", FINAL: "Final" };
+
 const state = {
   sim: null, live: null, merged: [],
   sortKey: "live", sortDir: "desc",
@@ -36,6 +44,51 @@ const esc = (s) =>
 const pct = (x, d = 1) => (x * 100).toFixed(d) + "%";
 const normName = (s) =>
   String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/* ---------- time helpers (for the update-cadence + schedule cards) ---------- */
+// next occurrence (after `from`) of any of these UTC hours, as a Date
+function nextUtcHour(hours, from) {
+  const sorted = [...hours].sort((a, b) => a - b);
+  for (let d = 0; d < 2; d++)
+    for (const h of sorted) {
+      const c = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(),
+        from.getUTCDate() + d, h, 0, 0));
+      if (c.getTime() > from.getTime()) return c;
+    }
+  return null;
+}
+// most recent occurrence (at or before `from`) of any of these UTC hours
+function prevUtcHour(hours, from) {
+  const sorted = [...hours].sort((a, b) => b - a);
+  for (let d = 0; d < 2; d++)
+    for (const h of sorted) {
+      const c = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(),
+        from.getUTCDate() - d, h, 0, 0));
+      if (c.getTime() <= from.getTime()) return c;
+    }
+  return null;
+}
+function relParts(ms) {
+  ms = Math.max(0, ms);
+  const m = Math.round(ms / 60000);
+  if (m < 1) return "<1m";
+  if (m < 60) return m + "m";
+  const h = Math.floor(m / 60);
+  if (h < 48) return h + "h";
+  return Math.round(h / 24) + "d";
+}
+const fmtClock = (d) =>
+  d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const fmtDay = (d) =>
+  d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+const fmtTime = (d) =>
+  d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+// pool entries (from the merged leaderboard) who picked a given team
+function ownersOf(teamName) {
+  const key = normName(teamName);
+  return state.merged.filter((e) => (e.picks || []).some((p) => p && normName(p) === key));
+}
 
 function parseCSV(text) {
   // quote-aware CSV -> array of arrays
@@ -133,12 +186,15 @@ function render() {
   state.elim = new Set((state.sim.teams || []).filter((t) => t.out).map((t) => t.name));
   renderProvenance();
   renderResultsBanner();
+  renderUpdateStatus();
   renderStatStrip();
   renderChampion();
   renderBestPicks();
   renderLeaderboard();
   renderMovers();
+  renderRecentResults();
   renderGroups();
+  renderUpcoming();
   renderTeams();
   renderBoot();
   renderFooter();
@@ -234,6 +290,181 @@ function renderResultsBanner() {
     `${ds ? ` (through <b>${esc(ds)}</b>)` : ""}.</span>` +
     `<span class="sep">•</span><span><b>${nOut}</b> teams eliminated</span>` +
     `<span class="sep">•</span><span><b>${nBlk}</b> ${nBlk === 1 ? "entry" : "entries"} blocked from winning</span>`;
+}
+
+function renderUpdateStatus() {
+  const sec = $("#updates");
+  if (!sec || !state.sim) return;
+  const m = state.sim.meta;
+  const sched = m.schedule || {};
+  const resHours = sched.results_utc_hours || RESULTS_SWEEP_UTC;
+  const oddsHours = sched.odds_utc_hours || ODDS_REFRESH_UTC;
+  const now = new Date();
+
+  const resLast = (m.results && m.results.as_of) ? new Date(Date.parse(m.results.as_of)) : null;
+  const resNext = nextUtcHour(resHours, now);
+  const oddsExact = !!m.odds_at;
+  const oddsLast = oddsExact ? new Date(Date.parse(m.odds_at)) : prevUtcHour(oddsHours, now);
+  const oddsNext = nextUtcHour(oddsHours, now);
+
+  const ago = (d) => (d ? relParts(now - d) + " ago" : "—");
+  const into = (d) => (d ? "in " + relParts(d - now) : "—");
+  const sub = (d) => (d ? `<small>${esc(fmtClock(d))}</small>` : "");
+  const card = (ic, title, last, next, approx) => `
+    <div class="upd">
+      <div class="upd-h"><span class="upd-ic">${ic}</span>${title}</div>
+      <div class="upd-row"><span class="k">Updated${approx ? " ≈" : ""}</span>
+        <span class="v">${ago(last)}${sub(last)}</span></div>
+      <div class="upd-row"><span class="k">Next</span>
+        <span class="v">${into(next)}${sub(next)}</span></div>
+    </div>`;
+
+  sec.innerHTML =
+    `<div class="upd-grid">` +
+    card("📊", "Odds", oddsLast, oddsNext, !oddsExact) +
+    card("⚽", "Results", resLast, resNext, false) +
+    `</div>` +
+    `<p class="upd-note">Refresh windows are fixed (UTC); shown in your local time.` +
+    `${oddsExact ? "" : " Last-odds time is approximate until the next scheduled build records it."}</p>`;
+}
+
+// finished matches, newest first — dated from the builder when present, else the
+// group cards' match lists (undated)
+function recentMatchList() {
+  if (Array.isArray(state.sim.recent_results) && state.sim.recent_results.length)
+    return state.sim.recent_results.slice().sort((a, b) =>
+      (b.date ? Date.parse(b.date) : 0) - (a.date ? Date.parse(a.date) : 0));
+  const out = [];
+  (state.sim.groups || []).forEach((g) =>
+    (g.matches || []).forEach((mt) =>
+      out.push({ date: null, round: "GROUP", group: g.letter,
+        home: mt.home, away: mt.away, hg: mt.hg, ag: mt.ag })));
+  return out.reverse();
+}
+
+function renderRecentResults() {
+  const sec = $("#recent");
+  const matches = recentMatchList();
+  if (!matches.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const sc = state.sim.meta.scoring || {};
+  const FALLBACK = { R32: 5, R16: 7, QF: 10, SF: 15 };
+  const roundPts = (r) => r === "GROUP" ? (sc.group_win ?? 3)
+    : r === "FINAL" ? (sc.champion ?? 20) : (sc[r] ?? FALLBACK[r] ?? 0);
+  const drawPts = sc.group_draw ?? 1;
+  const chip = (e) => `<span class="rr-ent" title="${esc(e.name)}${e.win_prob != null ? " · " + pct(e.win_prob) + " to win" : " · live only"}">${esc(e.name)}</span>`;
+  const side = (arr) => {
+    if (!arr.length) return `<span class="rr-none">none</span>`;
+    return arr.slice(0, 6).map(chip).join("") +
+      (arr.length > 6 ? `<span class="rr-more">+${arr.length - 6}</span>` : "");
+  };
+  const LIMIT = 14;
+  const rows = matches.slice(0, LIMIT).map((m) => {
+    const draw = m.hg === m.ag;
+    const homeWin = m.hg > m.ag;
+    let helped, hurt, tag;
+    if (draw) {
+      helped = [...ownersOf(m.home), ...ownersOf(m.away)]
+        .sort((a, b) => (b.win_prob ?? -1) - (a.win_prob ?? -1));
+      hurt = [];
+      tag = `<span class="rr-tag draw">draw · +${drawPts} each</span>`;
+    } else {
+      const win = homeWin ? m.home : m.away, lose = homeWin ? m.away : m.home;
+      helped = ownersOf(win).sort((a, b) => (b.win_prob ?? -1) - (a.win_prob ?? -1));
+      hurt = ownersOf(lose).sort((a, b) => (b.win_prob ?? -1) - (a.win_prob ?? -1));
+      tag = `<span class="rr-tag win">${getFlag(win)} ${esc(win)} +${roundPts(m.round)}</span>`;
+    }
+    const meta = [ROUND_LABEL[m.round] || m.round, m.group ? "Grp " + m.group : null,
+      m.date ? fmtClock(new Date(Date.parse(m.date))) : null].filter(Boolean).join(" · ");
+    return `<div class="rr-row">
+      <div class="rr-match">
+        <div class="rr-line">
+          <span class="h${homeWin ? " w" : ""}">${esc(m.home)}${getFlag(m.home)}</span>
+          <span class="sc">${m.hg}–${m.ag}</span>
+          <span class="a${!draw && !homeWin ? " w" : ""}">${getFlag(m.away)}${esc(m.away)}</span>
+        </div>
+        <div class="rr-meta">${esc(meta)} ${tag}</div>
+      </div>
+      <div class="rr-impact">
+        <div class="rr-side help"><span class="lbl">▲ helped</span><span class="ents">${side(helped)}</span></div>
+        <div class="rr-side hurt"><span class="lbl">▼ hurt</span><span class="ents">${side(hurt)}</span></div>
+      </div>
+    </div>`;
+  }).join("");
+  const note = `<p class="disclaimer">` +
+    (matches.length > LIMIT ? `Latest ${LIMIT} of ${matches.length} completed matches. ` : "") +
+    `“Helped/hurt” = pool entries who picked the winning / losing team ` +
+    `(group win +${sc.group_win ?? 3}, draw +${drawPts}), ordered by win %.</p>`;
+  sec.innerHTML =
+    `<div class="card-head"><h2>Recent Results <span class="muted">who it helped &amp; hurt</span></h2>` +
+    `<span class="tag">live</span></div><div class="rr-list">${rows}</div>${note}`;
+}
+
+// upcoming fixtures — dated from the builder when present, else remaining group
+// round-robin pairings derived from the standings (undated)
+function upcomingList() {
+  if (Array.isArray(state.sim.schedule_upcoming) && state.sim.schedule_upcoming.length)
+    return state.sim.schedule_upcoming.slice().sort((a, b) =>
+      (a.date ? Date.parse(a.date) : Infinity) - (b.date ? Date.parse(b.date) : Infinity));
+  const out = [];
+  (state.sim.groups || []).forEach((g) => {
+    const names = (g.teams || []).map((t) => t.name);
+    const played = new Set((g.matches || []).map((mt) =>
+      [normName(mt.home), normName(mt.away)].sort().join("|")));
+    for (let a = 0; a < names.length; a++)
+      for (let b = a + 1; b < names.length; b++) {
+        const key = [normName(names[a]), normName(names[b])].sort().join("|");
+        if (!played.has(key))
+          out.push({ date: null, round: "GROUP", group: g.letter, home: names[a], away: names[b] });
+      }
+  });
+  return out.sort((a, b) => (a.group || "").localeCompare(b.group || ""));
+}
+
+function renderUpcoming() {
+  const sec = $("#schedule");
+  const all = upcomingList();
+  if (!all.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const dated = all.some((m) => m.date);
+  const LIMIT = 16;
+  const list = all.slice(0, LIMIT);
+  const elim = state.elim || new Set();
+  const matchHTML = (m) => {
+    const eh = elim.has(m.home) ? " elim" : "", ea = elim.has(m.away) ? " elim" : "";
+    const when = m.date ? fmtTime(new Date(Date.parse(m.date))) : "Grp " + esc(m.group || "?");
+    const rd = m.date
+      ? (ROUND_LABEL[m.round] || m.round) + (m.group ? " · " + esc(m.group) : "")
+      : (m.round === "GROUP" ? "" : (ROUND_LABEL[m.round] || m.round)); // group letter already in "when"
+    return `<div class="sch-match">
+      <span class="when">${when}</span>
+      <span class="teams"><span class="h${eh}">${esc(m.home)}${getFlag(m.home)}</span>
+        <span class="vs">v</span>
+        <span class="a${ea}">${getFlag(m.away)}${esc(m.away)}</span></span>
+      <span class="rd">${rd}</span>
+    </div>`;
+  };
+  let body;
+  if (dated) {
+    const days = new Map();
+    list.forEach((m) => {
+      const k = m.date ? fmtDay(new Date(Date.parse(m.date))) : "TBD";
+      if (!days.has(k)) days.set(k, []);
+      days.get(k).push(m);
+    });
+    body = [...days.entries()].map(([day, ms]) =>
+      `<div class="sch-day"><div class="sch-dh">${esc(day)}</div>${ms.map(matchHTML).join("")}</div>`).join("");
+  } else {
+    body = `<div class="sch-day">${list.map(matchHTML).join("")}</div>`;
+  }
+  const note = (all.length > LIMIT
+    ? `Next ${LIMIT} of ${all.length} upcoming matches. `
+    : "") + (dated ? "" : "Remaining group fixtures — kickoff times appear once the schedule feed updates.");
+  sec.innerHTML =
+    `<div class="card-head"><h2>Upcoming <span class="muted">schedule</span></h2>` +
+    `<span class="tag">${dated ? "fixtures" : "remaining"}</span></div>` +
+    `<div class="sch-grid">${body}</div>` +
+    (note ? `<p class="disclaimer">${note}</p>` : "");
 }
 
 function fmtPicksFlags(e) {
@@ -585,6 +816,7 @@ function tick() {
     loadLive().then((live) => { if (live) { state.live = live; merge(); render(); } });
   }
   const el = $("#countdown"); if (el) el.textContent = state.countdown;
+  if (state.countdown % 30 === 0 && state.sim) renderUpdateStatus(); // keep "ago/next" fresh
 }
 
 async function init() {

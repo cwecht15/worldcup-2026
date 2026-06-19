@@ -34,6 +34,11 @@ import fetch_odds
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# Refresh cadence (UTC hours) — mirrors .github/workflows/build-and-deploy.yml.
+# Embedded in sim.json so the frontend can show the next update time in local zone.
+RESULTS_SWEEP_UTC = [19, 21, 23, 1, 3, 5, 7]   # results fetched on every sweep
+ODDS_REFRESH_UTC = [19, 5]                      # odds refreshed twice a day
+
 SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vTQPFnmAZG7QiOJTpcCWUSZQb"
     "kN90EAJfJQaf8BacjBBRkNzloun10HnMdLBzFWZt-qU4JHZaVb3I80/pub"
@@ -390,7 +395,9 @@ def fetch_prev(url):
     pmap = {results._fold(e["name"]): {"win_prob": e.get("win_prob"),
                                        "rank": rank[results._fold(e["name"])],
                                        "proj": e.get("proj_total")} for e in ents}
-    return {"map": pmap, "as_of": (d.get("meta", {}) or {}).get("generated_at")}
+    meta = d.get("meta", {}) or {}
+    return {"map": pmap, "as_of": meta.get("generated_at"),
+            "odds_at": meta.get("odds_at")}
 
 
 def compute_finals(entries, sim):
@@ -557,12 +564,68 @@ def build_groups(teams, sim, res):
     return groups
 
 
+def _group_letter(g):
+    """'GROUP_A' / 'Group A' -> 'A'; anything else -> None."""
+    if not g:
+        return None
+    s = str(g).upper().replace("GROUP_", "").replace("GROUP ", "").strip()
+    return s[:1] if s else None
+
+
+def build_recent_results(teams, res, limit=18):
+    """Completed matches, newest-first, with dates/round/group for the Recent
+    Results card.  The frontend derives who each game helped/hurt from ownership."""
+    if not res:
+        return []
+    out = []
+    for m in res.matches:
+        i, j = m["i"], m["j"]
+        out.append({
+            "date": m.get("date"),
+            "round": m["round"],
+            "group": _group_letter(m.get("group")),
+            "home": teams.names[i], "away": teams.names[j],
+            "hg": int(m["gi"]), "ag": int(m["gj"]),
+        })
+    out.sort(key=lambda x: x["date"] or "", reverse=True)
+    return out[:limit]
+
+
+def load_upcoming(teams, limit=30):
+    """Upcoming fixtures (kickoff time + matchup) from data/results.json's
+    'upcoming' list, with team names resolved to our canonical spellings."""
+    path = os.path.join(HERE, "data", "results.json")
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    out = []
+    for u in data.get("upcoming", []):
+        rk = results.STAGE_MAP.get(str(u.get("stage", "GROUP_STAGE")).upper(), "GROUP")
+        if rk is None:                                  # 3rd-place playoff: no pool points
+            continue
+        i = results.resolve_team(u.get("home"), teams)
+        j = results.resolve_team(u.get("away"), teams)
+        home = teams.names[i] if i is not None else u.get("home")
+        away = teams.names[j] if j is not None else u.get("away")
+        if not home or not away:
+            continue
+        out.append({"date": u.get("utcDate"), "round": rk,
+                    "group": _group_letter(u.get("group")),
+                    "home": home, "away": away})
+    out.sort(key=lambda x: x["date"] or "")
+    return out[:limit]
+
+
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
 def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
                   actual_own, teams, beta, n_full, now_iso, finals=None, res=None,
-                  groups=None, prev=None):
+                  groups=None, prev=None, recent=None, upcoming=None, odds_at=None):
     E = len(entries)
     # current rank by win probability (1 = best), for momentum vs the last build
     win_order = sorted(range(E), key=lambda i: -float(pool["win_prob"][i]))
@@ -620,6 +683,9 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
                          "matches_played": res.n_matches} if res
                         else {"conditional": False}),
             "prev_at": (prev["as_of"] if prev else None),
+            "odds_at": odds_at,
+            "schedule": {"results_utc_hours": RESULTS_SWEEP_UTC,
+                         "odds_utc_hours": ODDS_REFRESH_UTC},
         },
         "entries": out_entries,
         "teams": teams_tbl,
@@ -627,6 +693,8 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
         "champion": champ,
         "golden_boot": gb,
         "groups": groups or [],
+        "recent_results": recent or [],
+        "schedule_upcoming": upcoming or [],
         "field": {
             "n_entries": E,
             "most_picked": [{"team": t, "count": c,
@@ -671,6 +739,7 @@ def main():
                     help="skip the momentum diff against the previous build")
     args = ap.parse_args()
 
+    odds_refreshed = False
     if args.refresh_odds:
         # free-tier guard: a refresh costs 2 requests; check the (free) budget first
         NEED = 2
@@ -686,6 +755,7 @@ def main():
                 print("[odds] refreshing from The Odds API...")
             fetch_odds.update_csv(fetch_odds.fetch())
             fetch_odds.fetch_match_odds()
+            odds_refreshed = True
 
     # live results (if present) condition the simulation on matches already played
     teams0 = model.load_teams()
@@ -731,12 +801,18 @@ def main():
     gb = build_golden_boot(sim, teams, players, entries,
                            real_team_goals=rtg, real_player_goals=rpg)
     groups = build_groups(teams, sim, res)
+    recent = build_recent_results(teams, res)
+    upcoming = load_upcoming(teams)
     prev = None if args.no_prev else fetch_prev(args.prev_url)
 
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    # last odds refresh: now if we just pulled fresh odds, else carry forward the
+    # timestamp from the previously-deployed sim.json (None until a refresh records one)
+    odds_at = now_iso if odds_refreshed else (prev.get("odds_at") if prev else None)
     payload = build_payload(entries, scores, pool, paths, teams_tbl, best, champ,
                             gb, actual_own, teams, beta, n_full, now_iso,
-                            finals=finals, res=res, groups=groups, prev=prev)
+                            finals=finals, res=res, groups=groups, prev=prev,
+                            recent=recent, upcoming=upcoming, odds_at=odds_at)
 
     # ---- self-checks ----
     wsum = float(pool["win_prob"].sum())

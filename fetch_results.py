@@ -56,8 +56,20 @@ def build():
         return False
 
     matches = []
+    upcoming = []
     for m in md.get("matches", []):
-        if m.get("status") not in ("FINISHED", "AWARDED"):
+        status = m.get("status")
+        if status not in ("FINISHED", "AWARDED"):
+            # not played yet -> capture as an upcoming fixture (for the schedule card)
+            if status in ("SCHEDULED", "TIMED", "IN_PLAY", "PAUSED"):
+                upcoming.append({
+                    "utcDate": m.get("utcDate"),
+                    "stage": m.get("stage"),
+                    "group": m.get("group"),
+                    "matchday": m.get("matchday"),
+                    "home": (m.get("homeTeam") or {}).get("name"),
+                    "away": (m.get("awayTeam") or {}).get("name"),
+                })
             continue
         sc = m.get("score", {}) or {}
         ft = sc.get("fullTime", {}) or {}
@@ -68,11 +80,15 @@ def build():
         matches.append({
             "stage": m.get("stage"),
             "group": m.get("group"),
+            "utcDate": m.get("utcDate"),
+            "matchday": m.get("matchday"),
             "home": (m.get("homeTeam") or {}).get("name"),
             "away": (m.get("awayTeam") or {}).get("name"),
             "home_goals": ft["home"], "away_goals": ft["away"],
             "winner": winner, "status": "FINISHED",
         })
+    upcoming.sort(key=lambda x: x.get("utcDate") or "")
+    upcoming = upcoming[:40]
 
     scorers = []
     try:
@@ -95,13 +111,13 @@ def build():
 
     payload = {
         "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "matches": matches, "scorers": scorers,
+        "matches": matches, "scorers": scorers, "upcoming": upcoming,
     }
     os.makedirs(DATA, exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
     print(f"[results] wrote {OUT}: {len(matches)} finished matches, "
-          f"{len(scorers)} scorers")
+          f"{len(scorers)} scorers, {len(upcoming)} upcoming fixtures")
     return True
 
 

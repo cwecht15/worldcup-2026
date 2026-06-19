@@ -100,7 +100,7 @@ class Results:
         return {"n": self.n, "present": self.present, "g_lo": self.g_lo,
                 "g_hi": self.g_hi, "winner": self.winner}
 
-    def _add_match(self, i, j, gi, gj, round_key, winner_idx):
+    def _add_match(self, i, j, gi, gj, round_key, winner_idx, date=None, group=None):
         n = self.n
         lo, hi = (i, j) if i < j else (j, i)
         code = lo * n + hi
@@ -111,7 +111,7 @@ class Results:
         self.real_team_goals[i] += gi
         self.real_team_goals[j] += gj
         self.matches.append({"i": i, "j": j, "gi": int(gi), "gj": int(gj),
-                             "round": round_key})
+                             "round": round_key, "date": date, "group": group})
         self.n_matches += 1
 
 
@@ -153,7 +153,8 @@ def load_results(teams, path=None):
                 winner_idx = j
             else:                                   # fall back to goals if not provided
                 winner_idx = i if gi >= gj else j
-        res._add_match(i, j, gi, gj, round_key, winner_idx)
+        res._add_match(i, j, gi, gj, round_key, winner_idx,
+                       date=m.get("utcDate"), group=m.get("group"))
 
     for s in data.get("scorers", []):
         name = s.get("player")
