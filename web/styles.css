@@ -469,3 +469,50 @@ tr.row.mine td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 .root-imp{font-family:var(--mono);font-size:10px;color:var(--txt-mute);border:1px solid var(--line);
   border-radius:999px;padding:2px 7px}
 @media(max-width:520px){.root-chips{grid-template-columns:1fr}}
+
+/* ====================================================================
+   MOBILE — compact, scrollable header + tighter content
+   ==================================================================== */
+@media(max-width:760px){
+  /* Header: brand + live pill on one short row; nav becomes a single
+     horizontally-scrolling strip on its own row (no more tall wrapping
+     header that freezes over the content). */
+  html{scroll-padding-top:92px}
+  .topbar{flex-wrap:wrap;gap:7px 10px;padding:8px 14px}
+  .brand{gap:9px}
+  .ball{font-size:20px}
+  .brand-text h1{font-size:14px}
+  .brand-sub{font-size:9px;letter-spacing:1.5px}
+  .status{order:2;margin-left:auto;gap:8px}
+  .provenance{display:none}                 /* long; freshness lives in the Data panel */
+  .nav{order:3;flex-basis:100%;width:100%;margin-left:0;flex-wrap:nowrap;
+    overflow-x:auto;gap:4px;padding-bottom:2px;
+    -webkit-overflow-scrolling:touch;scrollbar-width:none;-ms-overflow-style:none}
+  .nav::-webkit-scrollbar{display:none}
+  .nav a{flex:0 0 auto;white-space:nowrap;padding:6px 10px;font-size:12.5px}
+
+  /* Cards: trim padding so content gets more width */
+  .card{padding:15px 13px 13px}
+  main{gap:16px}
+}
+
+@media(max-width:640px){
+  /* Leaderboard: fit without a wide horizontal scroll — drop the widest,
+     least-critical column (Golden Boot) and tighten the win bar. */
+  table.lb{min-width:0}
+  .lb th.c-boot,.lb td.bootcell{display:none}
+  .lb thead th{padding:6px 7px}
+  .lb td{padding:8px 7px}
+  .wincell{min-width:92px}
+  .winbar{gap:6px}
+  .winbar .track{max-width:52px}
+  .winbar .wv{min-width:42px;font-size:12px}
+  .picks .pk{font-size:14px}
+}
+
+@media(max-width:440px){
+  /* Very narrow: picks flags also fold away (still shown in the expanded
+     path-to-victory detail), keeping name + live + proj + win on screen. */
+  .lb th.c-picks,.lb td.c-picks{display:none}
+  .brand-sub{display:none}
+}
