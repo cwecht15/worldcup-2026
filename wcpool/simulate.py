@@ -19,7 +19,7 @@ def _scatter_add(target, rows, cols, vals):
 
 class SimResult:
     def __init__(self, teams, total_pts, team_goals, reach_counts,
-                 roundwin_counts, champion, n_sims):
+                 roundwin_counts, champion, n_sims, tracked_outcomes=None):
         self.teams = teams
         self.total_pts = total_pts          # [N, 48] pool points per team
         self.team_goals = team_goals        # [N, 48] goals scored per team
@@ -27,6 +27,9 @@ class SimResult:
         self.roundwin_counts = roundwin_counts  # dict round -> [48] win counts
         self.champion = champion            # [N] champion team index
         self.n = n_sims
+        # [N, G] per-sim outcome of each tracked game (None if track was empty):
+        # 0=home win, 1=draw, 2=away win, -1=these two teams didn't meet this sim
+        self.tracked_outcomes = tracked_outcomes
 
     def expected_points(self):
         return self.total_pts.mean(axis=0)
@@ -42,10 +45,15 @@ class SimResult:
 
 
 def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
-             strength=None, fixed=None):
+             strength=None, fixed=None, track=None):
     """Monte Carlo of the bracket. If `fixed` is given (from results.Results.fixed()),
     matches that have actually been played are forced to their real outcome and only
-    the remaining matches are simulated (a conditional simulation)."""
+    the remaining matches are simulated (a conditional simulation).
+
+    If `track` is given (a list of {"code": lo*nteam+hi, "home_idx", "away_idx"},
+    one per upcoming game we want to analyze), the per-sim outcome of each tracked
+    game is recorded in SimResult.tracked_outcomes [N, G] (oriented to home_idx).
+    Recording only reads simulated values, so it never changes any other output."""
     rng = np.random.default_rng(seed)
     N = n_sims
     nteam = teams.n
@@ -54,6 +62,13 @@ def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
 
     total_pts = np.zeros((N, nteam), dtype=np.float32)
     team_goals = np.zeros((N, nteam), dtype=np.int32)
+
+    # tracked games: per-sim outcome (0 home / 1 draw / 2 away / -1 didn't meet)
+    track = track or []
+    G = len(track)
+    tracked_outcomes = np.full((N, G), -1, dtype=np.int8) if G else None
+    track_by_code = {int(t["code"]): g for g, t in enumerate(track)}
+    track_home = {int(t["code"]): int(t["home_idx"]) for t in track}
 
     GL = wcdata.GROUP_LETTERS
     winners = np.empty((N, 12), dtype=np.int32)
@@ -89,6 +104,16 @@ def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
             pts[:, b] += np.where(bwin, 3.0, np.where(draw, 1.0, 0.0))
             gf[:, a] += xa; ga[:, a] += xb
             gf[:, b] += xb; ga[:, b] += xa
+            if track_by_code:                           # record tracked group game
+                i, j = int(members[a]), int(members[b])
+                lo, hi = (i, j) if i < j else (j, i)
+                code = lo * nteam + hi
+                g = track_by_code.get(code)
+                if g is not None:
+                    home_is_a = track_home[code] == i
+                    hwin = awin if home_is_a else bwin  # home team wins
+                    awin_h = bwin if home_is_a else awin  # away team wins
+                    tracked_outcomes[:, g] = np.where(hwin, 0, np.where(awin_h, 2, 1))
 
         # team-level pool points for group stage = win/draw points already in pts
         _scatter_add(total_pts, rows, np.tile(members, N), pts.ravel())
@@ -177,6 +202,20 @@ def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
                 a_wins = np.where(pres, win == ta, a_wins)
 
         winner = np.where(a_wins, ta, tb)
+        if track_by_code:                               # record tracked KO games
+            lo_ko = np.minimum(ta, tb)
+            hi_ko = np.maximum(ta, tb)
+            codes_ko = lo_ko * nteam + hi_ko            # [N, P]
+            rN = np.arange(N)
+            for code, g in track_by_code.items():
+                m = codes_ko == code                    # [N, P]; pair meets <=1x
+                col = m.argmax(axis=1)
+                w_row = winner[rN, col]                 # winner where present
+                # only write -1 cells: a tracked group game stays its group result
+                take = m.any(axis=1) & (tracked_outcomes[:, g] == -1)
+                if take.any():
+                    tracked_outcomes[take, g] = np.where(
+                        w_row[take] == track_home[code], 0, 2)
         # team goals scored this match
         P = K // 2
         rrows = np.repeat(np.arange(N), P)
@@ -192,4 +231,5 @@ def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
 
     champion = current[:, 0]
     return SimResult(teams, total_pts, team_goals, reach_counts,
-                     roundwin_counts, champion, N)
+                     roundwin_counts, champion, N,
+                     tracked_outcomes=tracked_outcomes)

@@ -21,13 +21,15 @@ def fmt_portfolio(teams, idxs):
     return " / ".join(parts)  # " / " not " | " so it survives inside markdown tables
 
 
-def build_sim(quick=False, n_full=None, verbose=True, fixed=None):
+def build_sim(quick=False, n_full=None, verbose=True, fixed=None, track=None):
     """Load data, calibrate to the market, and run the Monte Carlo.
 
     Returns (teams, players, third_table, beta, target, strength, sim).
     Reused by main() and the analysis scripts.  If `fixed` is provided (from
     results.Results.fixed()), the final simulation is conditioned on the matches
-    already played; calibration still uses the market.
+    already played; calibration still uses the market.  If `track` is provided
+    (a list of upcoming games), the final sim records each tracked game's per-sim
+    outcome in sim.tracked_outcomes (used for the "what to root for" analysis).
     """
     teams = model.load_teams()
     players = model.load_players()
@@ -81,7 +83,7 @@ def build_sim(quick=False, n_full=None, verbose=True, fixed=None):
         print(f"\n[simulate] running {n_full:,} simulations...")
     sim = sim_mod.simulate(teams, beta=beta, base=1.32, home_adv=70.0,
                            third_table=third_table, n_sims=n_full, seed=2026,
-                           strength=strength, fixed=fixed)
+                           strength=strength, fixed=fixed, track=track)
     return teams, players, third_table, beta, target, strength, sim
 
 

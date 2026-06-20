@@ -18,11 +18,14 @@ const ODDS_REFRESH_UTC = [19, 5];
 const ROUND_LABEL = { GROUP: "Group", R32: "Round of 32", R16: "Round of 16",
   QF: "Quarterfinal", SF: "Semifinal", FINAL: "Final" };
 
+const MY_ENTRY_KEY = "wc_my_entry"; // localStorage: the visitor's starred entry
+
 const state = {
   sim: null, live: null, merged: [],
   sortKey: "live", sortDir: "desc",
   tierFilter: "all", teamSort: "ev",
   open: new Set(), countdown: REFRESH,
+  myEntry: null, // display name of the entry the visitor starred as "mine"
 };
 
 // how each sortable column reads a value off an entry
@@ -83,6 +86,18 @@ const fmtDay = (d) =>
   d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 const fmtTime = (d) =>
   d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+// "Today" / "Tomorrow" / weekday for a fixture date, in the visitor's local zone
+function dayLabel(date) {
+  if (!date) return "Upcoming";
+  const d = new Date(Date.parse(date));
+  if (isNaN(d)) return "Upcoming";
+  const ymd = (x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+  const now = new Date();
+  const tmrw = new Date(now); tmrw.setDate(now.getDate() + 1);
+  if (ymd(d) === ymd(now)) return "Today";
+  if (ymd(d) === ymd(tmrw)) return "Tomorrow";
+  return fmtDay(d);
+}
 
 // pool entries (from the merged leaderboard) who picked a given team
 function ownersOf(teamName) {
@@ -188,6 +203,7 @@ function render() {
   renderResultsBanner();
   renderUpdateStatus();
   renderStatStrip();
+  renderRooting();
   renderChampion();
   renderBestPicks();
   renderLeaderboard();
@@ -508,6 +524,127 @@ function renderStatStrip() {
     .join("");
 }
 
+/* ---------- "What to root for" (personalized for the starred entry) ---------- */
+// the visitor's starred entry, looked up in the merged leaderboard (or null)
+function myMergedEntry() {
+  if (!state.myEntry) return null;
+  const key = normName(state.myEntry);
+  return state.merged.find((m) => normName(m.name) === key) || null;
+}
+
+function renderRooting() {
+  const sec = $("#rooting");
+  if (!sec || !state.sim) return;
+  const root = state.sim.rooting;
+  // no tracked games at all -> nothing to root for (e.g. tournament finished)
+  if (!root || !Array.isArray(root.games) || !root.games.length) {
+    sec.hidden = true; return;
+  }
+  sec.hidden = false;
+  const head = (body) =>
+    `<div class="card-head"><h2>Root For <span class="muted">your best outcomes today</span></h2>` +
+    `<span class="tag">my entry</span></div>${body}`;
+
+  // not starred yet: prompt the visitor to pick their entry
+  if (!state.myEntry) {
+    sec.innerHTML = head(
+      `<div class="root-cta"><span class="root-cta-star">★</span>` +
+      `<div><b>Star your entry</b> in the leaderboard below (tap the ☆ next to your name) ` +
+      `and we'll show exactly what to root for in each of today's games to lift your win&nbsp;%.</div></div>`);
+    return;
+  }
+
+  const me = myMergedEntry();
+  const rows = me ? root.by_entry[normName(me.name)] : null;
+  if (!me || !rows) {
+    sec.innerHTML = head(
+      `<div class="root-note">No projection for <b>${esc(state.myEntry)}</b> yet — ` +
+      `${me ? "this entry was added after the last model run." : "we couldn't find that entry."} ` +
+      `<button class="root-clear" data-rootclear="1">choose a different entry</button></div>`);
+    return;
+  }
+
+  const base = me.win_prob;            // baseline win %
+  const games = root.games;
+  const OUT_KEYS = ["home", "draw", "away"]; // index order of each by_entry row
+  // assemble per-game outcome cells (skip nulls — e.g. draw for a knockout game)
+  const built = games.map((gm, gi) => {
+    const vals = rows[gi] || [];
+    const cells = [];
+    const push = (idx, label, sub) => {
+      const v = vals[idx];
+      if (v == null) return;
+      cells.push({ idx, key: OUT_KEYS[idx], label, sub, val: v });
+    };
+    push(0, `${getFlag(gm.home)} ${esc(gm.home)} win`, gm.p_home);
+    push(1, `Draw`, gm.p_draw);
+    push(2, `${getFlag(gm.away)} ${esc(gm.away)} win`, gm.p_away);
+    const best = cells.reduce((a, c) => (c.val > a.val ? c : a), cells[0]);
+    const worst = cells.reduce((a, c) => (c.val < a.val ? c : a), cells[0]);
+    const impact = best && worst ? best.val - worst.val : 0;
+    return { gm, cells, best, worst, impact };
+  }).filter((b) => b.cells.length);
+
+  if (!built.length) { sec.hidden = true; return; }
+  const maxImpact = Math.max(...built.map((b) => b.impact));
+
+  const chip = (b, c) => {
+    const d = c.val - base;            // change vs baseline, in probability
+    const cls = c === b.best ? "good" : (c === b.worst && b.impact > 0 ? "bad" : "");
+    const dtxt = Math.abs(d) < 0.00005 ? "" :
+      `<span class="rc-d ${d > 0 ? "up" : "down"}">${d > 0 ? "+" : "−"}${Math.abs(d * 100).toFixed(1)}</span>`;
+    return `<span class="root-chip ${cls}"><span class="rc-l">${c.label}</span>` +
+      `<span class="rc-v">${pct(c.val)}${dtxt}</span></span>`;
+  };
+
+  const gameRow = (b) => {
+    const gm = b.gm;
+    const when = gm.date ? fmtTime(new Date(Date.parse(gm.date)))
+      : (gm.group ? "Grp " + esc(gm.group) : (ROUND_LABEL[gm.round] || gm.round));
+    const rd = [ROUND_LABEL[gm.round] || gm.round, gm.group ? "Grp " + esc(gm.group) : null]
+      .filter(Boolean).join(" · ");
+    const big = b.impact >= maxImpact && b.impact > 0
+      ? `<span class="root-big" title="The most win-%-swinging game for you today">biggest swing</span>` : "";
+    const rec = b.best
+      ? `<span class="root-rec">Root for <b>${b.best.label}</b></span>` +
+        `<span class="root-imp" title="Win-% swing between your best and worst outcome">±${(b.impact * 100).toFixed(1)}pp</span>`
+      : "";
+    return `<div class="root-game">
+      <div class="root-g-head">
+        <span class="root-when">${when}</span>
+        <span class="root-match"><span class="h">${esc(gm.home)}${getFlag(gm.home)}</span>` +
+        `<span class="vs">v</span><span class="a">${getFlag(gm.away)}${esc(gm.away)}</span></span>
+        <span class="root-rd">${rd}${big}</span>
+      </div>
+      <div class="root-chips">${b.cells.map((c) => chip(b, c)).join("")}</div>
+      <div class="root-foot">${rec}</div>
+    </div>`;
+  };
+
+  // group chronologically by local day (Today / Tomorrow / weekday)
+  const days = new Map();
+  built.forEach((b) => {
+    const k = dayLabel(b.gm.date);
+    if (!days.has(k)) days.set(k, []);
+    days.get(k).push(b);
+  });
+  const body = [...days.entries()].map(([day, list]) =>
+    `<div class="root-day"><div class="root-dh">${esc(day)}</div>` +
+    `<div class="root-grid">${list.map(gameRow).join("")}</div></div>`).join("");
+
+  const hdr = `<div class="root-me">
+      <div class="root-me-l"><span class="lbl">Rooting guide for</span>
+        <span class="root-name">★ ${esc(me.name)}</span>
+        <button class="root-clear" data-rootclear="1" title="Unstar / pick a different entry">change</button></div>
+      <div class="root-me-r"><span class="lbl">your win&nbsp;% now</span>
+        <span class="root-base">${base != null ? pct(base) : "—"}</span></div>
+    </div>`;
+  const note = `<p class="disclaimer">Each percentage is your modeled chance to win the pool ` +
+    `<i>if that result happens</i>, vs your current ${base != null ? pct(base) : "win %"} — ` +
+    `estimated by conditioning the simulations on each outcome (rarer outcomes are noisier).</p>`;
+  sec.innerHTML = head(hdr + body + note);
+}
+
 function renderChampion() {
   const c = state.sim.champion;
   const top = c.title_odds[0];
@@ -593,9 +730,13 @@ function renderLeaderboard() {
     const boot = e.boot_pick
       ? `<span class="fl">${getFlag((state.sim.golden_boot.race.find((p) => p.player === e.boot_pick) || {}).team)}</span>${esc(e.boot_pick)}`
       : "—";
-    const main = `<tr class="row${state.open.has(e.name) ? " open" : ""}${e.blocked ? " blocked" : ""}" data-name="${esc(e.name)}">
+    const mine = state.myEntry && normName(e.name) === normName(state.myEntry);
+    const star = `<span class="starbtn${mine ? " on" : ""}" data-star="${esc(e.name)}" role="button" tabindex="0" ` +
+      `title="${mine ? "This is my entry — click to unstar" : "Mark this as my entry"}" ` +
+      `aria-label="${mine ? "Unstar my entry" : "Mark as my entry"}">${mine ? "★" : "☆"}</span>`;
+    const main = `<tr class="row${state.open.has(e.name) ? " open" : ""}${e.blocked ? " blocked" : ""}${mine ? " mine" : ""}" data-name="${esc(e.name)}">
       <td class="c-rank"><span class="rankbadge${g}">${rank}</span></td>
-      <td class="c-name"><div class="ename"><span class="caret">▶</span>${esc(e.name)} ${warn}${blk}</div></td>
+      <td class="c-name"><div class="ename">${star}<span class="caret">▶</span>${esc(e.name)} ${warn}${blk}</div></td>
       <td class="c-picks">${fmtPicksFlags(e)}</td>
       <td class="num">${e.live_total}</td>
       <td class="num proj">${e.proj_total != null ? e.proj_total : "—"}</td>
@@ -770,13 +911,46 @@ function renderFooter() {
 }
 
 /* ---------- interactions ---------- */
+// star/unstar an entry as "mine"; persist across visits (best-effort)
+function setMyEntry(name) {
+  state.myEntry = name;
+  try {
+    if (name) localStorage.setItem(MY_ENTRY_KEY, name);
+    else localStorage.removeItem(MY_ENTRY_KEY);
+  } catch (e) { /* storage disabled (private mode) — keep in-memory only */ }
+  renderLeaderboard();
+  renderRooting();
+}
+function toggleMyEntry(name) {
+  const isMine = state.myEntry && normName(state.myEntry) === normName(name);
+  setMyEntry(isMine ? null : name);
+}
+
 function wire() {
   $("#lb-body").addEventListener("click", (ev) => {
+    const sb = ev.target.closest(".starbtn");
+    if (sb) { ev.stopPropagation(); toggleMyEntry(sb.dataset.star); return; }
     const tr = ev.target.closest("tr.row");
     if (!tr) return;
     const name = tr.dataset.name;
     if (state.open.has(name)) state.open.delete(name); else state.open.add(name);
     renderLeaderboard();
+  });
+  // keyboard: Enter/Space on a focused star toggles it
+  $("#lb-body").addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    const sb = ev.target.closest(".starbtn");
+    if (!sb) return;
+    ev.preventDefault(); ev.stopPropagation();
+    toggleMyEntry(sb.dataset.star);
+  });
+  // "change" / "choose a different entry" inside the Root For panel -> unstar
+  const rootSec = $("#rooting");
+  if (rootSec) rootSec.addEventListener("click", (ev) => {
+    if (ev.target.closest("[data-rootclear]")) {
+      setMyEntry(null);
+      $("#leaderboard").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   });
   const lbHead = document.querySelector("#lb thead");
   if (lbHead) lbHead.addEventListener("click", (ev) => {
@@ -829,6 +1003,19 @@ async function init() {
     return;
   }
   merge();
+  // restore the visitor's starred entry (localStorage), or a #me=<name> deep link
+  try {
+    const saved = localStorage.getItem(MY_ENTRY_KEY);
+    if (saved) state.myEntry = saved;
+  } catch (e) { /* storage disabled */ }
+  if (location.hash.startsWith("#me=")) {
+    const nm = decodeURIComponent(location.hash.slice(4));
+    const hit = state.merged.find((m) => normName(m.name) === normName(nm));
+    if (hit) {
+      state.myEntry = hit.name;
+      try { localStorage.setItem(MY_ENTRY_KEY, hit.name); } catch (e) { /* noop */ }
+    }
+  }
   // optional shareable sort: ?sort=win|live|proj|name|boot[&dir=asc|desc]
   const sp = new URLSearchParams(location.search);
   if (sp.get("sort") && SORT_VAL[sp.get("sort")]) {

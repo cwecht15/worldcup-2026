@@ -615,9 +615,101 @@ def load_upcoming(teams, limit=30):
             continue
         out.append({"date": u.get("utcDate"), "round": rk,
                     "group": _group_letter(u.get("group")),
-                    "home": home, "away": away})
+                    "home": home, "away": away,
+                    "i": i, "j": j})       # resolved indices (None if unmatched)
     out.sort(key=lambda x: x["date"] or "")
     return out[:limit]
+
+
+def remaining_group_fixtures(teams, res):
+    """Fallback when the feed carries no 'upcoming' list: the group round-robin
+    games not yet played, shaped like load_upcoming() entries (undated).  Mirrors
+    the frontend's upcomingList() fallback so "what to root for" still has data."""
+    played = set()
+    if res:
+        for m in res.matches:
+            if m["round"] != "GROUP":
+                continue
+            i, j = m["i"], m["j"]
+            played.add((i, j) if i < j else (j, i))
+    out = []
+    for g in sorted(teams.groups):
+        members = list(teams.groups[g])
+        for a in range(len(members)):
+            for b in range(a + 1, len(members)):
+                i, j = int(members[a]), int(members[b])
+                if ((i, j) if i < j else (j, i)) in played:
+                    continue
+                out.append({"date": None, "round": "GROUP", "group": g,
+                            "home": teams.names[i], "away": teams.names[j],
+                            "i": i, "j": j})
+    return out
+
+
+def build_track(upcoming, teams, max_days=2, cap=14):
+    """From load_upcoming() output, pick the next `max_days` distinct match-days
+    of fully-resolved games (capped at `cap`) for the "what to root for" analysis.
+
+    Returns (track, games_meta) — parallel lists.  `track` feeds simulate(track=);
+    `games_meta` carries the public matchup info aligned to sim.tracked_outcomes."""
+    nteam = teams.n
+    track, games_meta, day_keys = [], [], []
+    for u in upcoming:
+        i, j = u.get("i"), u.get("j")
+        if i is None or j is None:          # both teams must be known to analyze
+            continue
+        day = (u["date"] or "")[:10]        # UTC calendar day
+        if day:
+            if day not in day_keys:
+                if len(day_keys) >= max_days:
+                    continue                # past the first max_days match-days
+                day_keys.append(day)
+        lo, hi = (i, j) if i < j else (j, i)
+        track.append({"code": lo * nteam + hi, "home_idx": i, "away_idx": j})
+        games_meta.append({"date": u["date"], "round": u["round"],
+                           "group": u["group"], "home": u["home"], "away": u["away"]})
+        if len(track) >= cap:
+            break
+    return track, games_meta
+
+
+def build_rooting(entries, pool, sim, games_meta):
+    """Per-entry 'what to root for' for each tracked upcoming game.
+
+    Conditions the existing Monte Carlo sample on each game's outcome: the win %
+    given an outcome O is just the mean win-share over the sims where O happened.
+    No re-simulation — sim.tracked_outcomes already recorded each game's per-sim
+    result (0 home / 1 draw / 2 away / -1 the two teams didn't meet)."""
+    oc = sim.tracked_outcomes
+    if oc is None or oc.shape[1] == 0 or not games_meta:
+        return None
+    share = pool["share"]                                   # [E, N]
+    E = len(entries)
+    games = []
+    rows = [[] for _ in range(E)]                           # by_entry rows, per game
+    for g, meta in enumerate(games_meta):
+        col = oc[:, g]
+        is_ko = meta["round"] != "GROUP"
+        n_def = int((col != -1).sum())                      # sims where they met
+        gmeta = {"date": meta["date"], "round": meta["round"],
+                 "group": meta["group"], "home": meta["home"], "away": meta["away"],
+                 "p_home": None, "p_draw": None, "p_away": None}
+        keys = {0: "p_home", 1: "p_draw", 2: "p_away"}
+        cond = {}                                           # outcome -> [E] or None
+        for o in (0, 1, 2):
+            if o == 1 and is_ko:                            # no draws in knockouts
+                cond[o] = None
+                continue
+            mask = col == o
+            n_o = int(mask.sum())
+            gmeta[keys[o]] = round(n_o / n_def, 4) if n_def else 0.0
+            cond[o] = share[:, mask].mean(axis=1) if n_o else None
+        games.append(gmeta)
+        for e in range(E):
+            rows[e].append([round(float(cond[o][e]), 4) if cond[o] is not None else None
+                            for o in (0, 1, 2)])
+    by_entry = {results._fold(ent["name"]): rows[e] for e, ent in enumerate(entries)}
+    return {"games": games, "by_entry": by_entry}
 
 
 # ---------------------------------------------------------------------------
@@ -625,7 +717,8 @@ def load_upcoming(teams, limit=30):
 # ---------------------------------------------------------------------------
 def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
                   actual_own, teams, beta, n_full, now_iso, finals=None, res=None,
-                  groups=None, prev=None, recent=None, upcoming=None, odds_at=None):
+                  groups=None, prev=None, recent=None, upcoming=None, odds_at=None,
+                  rooting=None):
     E = len(entries)
     # current rank by win probability (1 = best), for momentum vs the last build
     win_order = sorted(range(E), key=lambda i: -float(pool["win_prob"][i]))
@@ -695,6 +788,7 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
         "groups": groups or [],
         "recent_results": recent or [],
         "schedule_upcoming": upcoming or [],
+        "rooting": rooting,
         "field": {
             "n_entries": E,
             "most_picked": [{"team": t, "count": c,
@@ -769,10 +863,20 @@ def main():
     else:
         print("[results] no data/results.json -> full-tournament (pre-results) sim")
 
+    # upcoming fixtures + the games to analyze for "what to root for" (next two
+    # match-days).  Built before the sim so it can record their per-sim outcomes.
+    upcoming = load_upcoming(teams0)
+    track, rooting_games = build_track(upcoming, teams0)
+    if not track:                       # feed had no upcoming list -> derive fixtures
+        track, rooting_games = build_track(
+            remaining_group_fixtures(teams0, res), teams0)
+    if track:
+        print(f"[rooting] tracking {len(track)} upcoming games for win% conditioning")
+
     n_full = args.n if args.n is not None else (8000 if args.quick else 200_000)
     print(f"[build] running engine (n_sims={n_full:,})...")
     teams, players, _third, beta, _target, _strength, sim = build_sim(
-        quick=args.quick, n_full=n_full, verbose=True, fixed=fixed)
+        quick=args.quick, n_full=n_full, verbose=True, fixed=fixed, track=track)
 
     # canonical Golden-Boot goals/players (filtered + reset), goals-aware if live
     rtg = res.real_team_goals if res else None
@@ -793,6 +897,7 @@ def main():
     pool = resolve_pool(entries, scores, sim, gb_goals, gb_players)
     paths = build_paths(entries, scores, pool, sim, teams)
     finals = compute_finals(entries, sim)
+    rooting = build_rooting(entries, pool, sim, rooting_games)
 
     teams_tbl, ev_df, actual_own = build_team_table(
         sim, teams, entries, args.gamma, results_present=bool(res))
@@ -802,7 +907,9 @@ def main():
                            real_team_goals=rtg, real_player_goals=rpg)
     groups = build_groups(teams, sim, res)
     recent = build_recent_results(teams, res)
-    upcoming = load_upcoming(teams)
+    # public schedule list drops the internal resolved indices used for tracking
+    upcoming_public = [{k: v for k, v in u.items() if k not in ("i", "j")}
+                       for u in upcoming]
     prev = None if args.no_prev else fetch_prev(args.prev_url)
 
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
@@ -812,7 +919,8 @@ def main():
     payload = build_payload(entries, scores, pool, paths, teams_tbl, best, champ,
                             gb, actual_own, teams, beta, n_full, now_iso,
                             finals=finals, res=res, groups=groups, prev=prev,
-                            recent=recent, upcoming=upcoming, odds_at=odds_at)
+                            recent=recent, upcoming=upcoming_public, odds_at=odds_at,
+                            rooting=rooting)
 
     # ---- self-checks ----
     wsum = float(pool["win_prob"].sum())
