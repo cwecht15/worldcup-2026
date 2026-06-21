@@ -288,7 +288,22 @@ def resolve_pool(entries, scores, sim, gb_goals, gb_players):
     return {
         "win_prob": win_prob, "p_top3": p_top3, "exp_finish": exp_finish,
         "exp_points": exp_points, "share": share, "sb": sb, "leader": leader,
+        "key": key,
     }
+
+
+def build_h2h(key, chunk=8000):
+    """Pairwise head-to-head: ahead[a, b] = P(entry a finishes strictly ahead of
+    entry b) across the sims, using the same resolution key as the pool (points ->
+    named the Golden-Boot winner -> closest goal guess).  Chunked over sims to
+    bound the [E, E, chunk] comparison tensor (mirrors _strictly_better)."""
+    E, N = key.shape
+    ahead = np.zeros((E, E), dtype=np.int64)
+    for s in range(0, N, chunk):
+        k = key[:, s:s + chunk]                                  # [E, C]
+        gt = k[:, None, :] > k[None, :, :]                       # [a, b, C]
+        ahead += gt.sum(axis=2)
+    return ahead / float(N)                                      # [E, E] float
 
 
 def build_paths(entries, scores, pool, sim, teams):
@@ -684,9 +699,11 @@ def build_rooting(entries, pool, sim, games_meta):
     if oc is None or oc.shape[1] == 0 or not games_meta:
         return None
     share = pool["share"]                                   # [E, N]
+    base = pool["win_prob"]                                 # [E] baseline win %
     E = len(entries)
     games = []
     rows = [[] for _ in range(E)]                           # by_entry rows, per game
+    OUT_KEY = {0: "home", 1: "draw", 2: "away"}            # outcome -> mover bucket
     for g, meta in enumerate(games_meta):
         col = oc[:, g]
         is_ko = meta["round"] != "GROUP"
@@ -708,6 +725,24 @@ def build_rooting(entries, pool, sim, games_meta):
         for e in range(E):
             rows[e].append([round(float(cond[o][e]), 4) if cond[o] is not None else None
                             for o in (0, 1, 2)])
+        # ---- field-wide summary: how much this game shakes up the whole pool ----
+        valid = [cond[o] for o in (0, 1, 2) if cond[o] is not None]
+        if valid:
+            stk = np.vstack(valid)                          # [k, E]
+            gmeta["impact"] = round(float((stk.max(axis=0) - stk.min(axis=0)).sum()), 4)
+            movers = {}
+            for o in (0, 1, 2):
+                if cond[o] is None:
+                    continue
+                gain = cond[o] - base                       # [E] win% change vs baseline
+                top = np.argsort(-gain)[:3]
+                movers[OUT_KEY[o]] = [
+                    {"name": entries[i]["name"], "d": round(float(gain[i]), 4)}
+                    for i in top if gain[i] > 0.0003]
+            gmeta["movers"] = movers
+        else:
+            gmeta["impact"] = 0.0
+            gmeta["movers"] = {}
     by_entry = {results._fold(ent["name"]): rows[e] for e, ent in enumerate(entries)}
     return {"games": games, "by_entry": by_entry}
 
@@ -718,7 +753,7 @@ def build_rooting(entries, pool, sim, games_meta):
 def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
                   actual_own, teams, beta, n_full, now_iso, finals=None, res=None,
                   groups=None, prev=None, recent=None, upcoming=None, odds_at=None,
-                  rooting=None):
+                  rooting=None, h2h=None):
     E = len(entries)
     # current rank by win probability (1 = best), for momentum vs the last build
     win_order = sorted(range(E), key=lambda i: -float(pool["win_prob"][i]))
@@ -789,6 +824,7 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
         "recent_results": recent or [],
         "schedule_upcoming": upcoming or [],
         "rooting": rooting,
+        "h2h": h2h,
         "field": {
             "n_entries": E,
             "most_picked": [{"team": t, "count": c,
@@ -898,6 +934,10 @@ def main():
     paths = build_paths(entries, scores, pool, sim, teams)
     finals = compute_finals(entries, sim)
     rooting = build_rooting(entries, pool, sim, rooting_games)
+    # pairwise head-to-head: P(a finishes ahead of b), aligned to `entries` order
+    h2h_mat = build_h2h(pool["key"])
+    h2h = {"order": [results._fold(e["name"]) for e in entries],
+           "ahead": [[round(float(v), 3) for v in row] for row in h2h_mat]}
 
     teams_tbl, ev_df, actual_own = build_team_table(
         sim, teams, entries, args.gamma, results_present=bool(res))
@@ -920,7 +960,7 @@ def main():
                             gb, actual_own, teams, beta, n_full, now_iso,
                             finals=finals, res=res, groups=groups, prev=prev,
                             recent=recent, upcoming=upcoming_public, odds_at=odds_at,
-                            rooting=rooting)
+                            rooting=rooting, h2h=h2h)
 
     # ---- self-checks ----
     wsum = float(pool["win_prob"].sum())

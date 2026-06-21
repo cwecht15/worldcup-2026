@@ -26,6 +26,7 @@ const state = {
   tierFilter: "all", teamSort: "ev",
   open: new Set(), countdown: REFRESH,
   myEntry: null, // display name of the entry the visitor starred as "mine"
+  h2hA: null, h2hB: null, // head-to-head compare selections (display names)
 };
 
 // how each sortable column reads a value off an entry
@@ -207,10 +208,12 @@ function render() {
   renderChampion();
   renderBestPicks();
   renderLeaderboard();
+  renderH2H();
   renderMovers();
   renderRecentResults();
   renderGroups();
   renderUpcoming();
+  renderBigGames();
   renderTeams();
   renderBoot();
   renderFooter();
@@ -229,8 +232,8 @@ function renderMovers() {
   const sorted = [...ents].sort((a, b) => b.delta_win - a.delta_win);
   const up = sorted.filter((e) => e.delta_win > 0.0002).slice(0, 6);
   const down = sorted.filter((e) => e.delta_win < -0.0002).slice(-6).reverse();
-  const row = (e) => `<div class="mv-row">` +
-    `<span class="mv-name">${esc(e.name)}</span>` +
+  const row = (e) => `<div class="mv-row${isMe(e.name) ? " mine" : ""}">` +
+    `<span class="mv-name">${isMe(e.name) ? "★ " : ""}${esc(e.name)}</span>` +
     `<span class="mv-win">${pct(e.win_prob)}</span>` +
     `<span class="mv-d ${e.delta_win > 0 ? "up" : "down"}">${e.delta_win > 0 ? "▲" : "▼"}` +
     `${Math.abs(e.delta_win * 100).toFixed(1)}pp${e.rank_delta ? ` · ${e.rank_delta > 0 ? "+" : ""}${e.rank_delta}` : ""}</span></div>`;
@@ -249,19 +252,21 @@ function renderGroups() {
     $("#groups-body").innerHTML = `<div class="skeleton">No group data.</div>`;
     return;
   }
+  const myTeams = myPicksSet();
   $("#groups-body").innerHTML = groups.map((g) => {
     const rows = g.teams.map((t, i) => {
       const adv = i < 2 ? " adv" : "";
       const out = t.status === "out" ? " gout" : "";
+      const mineT = myTeams.has(normName(t.name)) ? " mineteam" : "";
       const end = t.status === "in"
         ? `<td class="gend in" title="Through to the knockouts">✓ in</td>`
         : t.status === "out"
         ? `<td class="gend out" title="Eliminated">out</td>`
         : `<td class="gend live" title="Modeled chance to reach the knockouts">${t.reach}%</td>`;
-      return `<tr class="${adv}${out}">
+      return `<tr class="${adv}${out}${mineT}">
         <td class="pos">${i + 1}</td>
         <td class="gflag">${getFlag(t.name)}</td>
-        <td class="gname" title="${esc(t.name)} · ${t.w}W ${t.d}D ${t.l}L · GF ${t.gf} GA ${t.ga}">${esc(t.name)}</td>
+        <td class="gname" title="${esc(t.name)}${mineT ? " · your pick" : ""} · ${t.w}W ${t.d}D ${t.l}L · GF ${t.gf} GA ${t.ga}">${esc(t.name)}${mineT ? ' <span class="mydot" title="your pick">★</span>' : ""}</td>
         <td class="gnum">${t.gd > 0 ? "+" + t.gd : t.gd}</td>
         <td class="gpts">${t.pts}</td>${end}</tr>`;
     }).join("");
@@ -368,7 +373,7 @@ function renderRecentResults() {
   const roundPts = (r) => r === "GROUP" ? (sc.group_win ?? 3)
     : r === "FINAL" ? (sc.champion ?? 20) : (sc[r] ?? FALLBACK[r] ?? 0);
   const drawPts = sc.group_draw ?? 1;
-  const chip = (e) => `<span class="rr-ent" title="${esc(e.name)}${e.win_prob != null ? " · " + pct(e.win_prob) + " to win" : " · live only"}">${esc(e.name)}</span>`;
+  const chip = (e) => `<span class="rr-ent${isMe(e.name) ? " mine" : ""}" title="${esc(e.name)}${e.win_prob != null ? " · " + pct(e.win_prob) + " to win" : " · live only"}">${isMe(e.name) ? "★ " : ""}${esc(e.name)}</span>`;
   const side = (arr) => {
     if (!arr.length) return `<span class="rr-none">none</span>`;
     return arr.slice(0, 6).map(chip).join("") +
@@ -508,13 +513,29 @@ function renderStatStrip() {
   const fav = state.merged
     .filter((e) => e.win_prob != null)
     .reduce((a, b) => (b.win_prob > (a ? a.win_prob : -1) ? b : a), null);
+  // when the visitor has starred an entry, the 4th card becomes "their" standing
+  const me = myMergedEntry();
+  let myCard;
+  if (me) {
+    const winRank = state.merged.filter((e) => e.win_prob != null)
+      .sort((a, b) => b.win_prob - a.win_prob)
+      .findIndex((e) => normName(e.name) === normName(me.name)) + 1;
+    const back = leader ? leader.live_total - (me.live_total || 0) : 0;
+    const sub = me.win_prob != null
+      ? `${winRank ? "win rank #" + winRank : ""}${back > 0 ? " · " + back + " pts back" : (back === 0 && leader ? " · live leader" : "")}`
+      : "live only";
+    myCard = { k: "My entry ★", v: me.win_prob != null ? pct(me.win_prob) : "—",
+      s: sub, cls: "mine" };
+  } else {
+    myCard = { k: "Win % favorite", v: fav ? fav.name.split(" ")[0] : "—",
+      s: fav ? pct(fav.win_prob) + " to win pool" : "", cls: "" };
+  }
   const cards = [
     { k: "Entries", v: f.n_entries, s: `fair share ${f.fair_share_pct}%` },
     { k: "Live leader", v: leader ? leader.name.split(" ")[0] : "—",
       s: leader ? `${leader.live_total} pts` : "" },
     { k: "Avg score", v: avg, s: "live points", cls: "cyan" },
-    { k: "Win % favorite", v: fav ? fav.name.split(" ")[0] : "—",
-      s: fav ? pct(fav.win_prob) + " to win pool" : "", cls: "" },
+    myCard,
     { k: "Boot leader", v: topBoot ? topBoot.player.split(" ").slice(-1)[0] : "—",
       s: topBoot ? pct(topBoot.win / 100) + " · " + topBoot.exp_goals + " xG" : "", cls: "amber" },
   ];
@@ -530,6 +551,15 @@ function myMergedEntry() {
   if (!state.myEntry) return null;
   const key = normName(state.myEntry);
   return state.merged.find((m) => normName(m.name) === key) || null;
+}
+// is this entry the visitor's starred one?
+function isMe(name) {
+  return state.myEntry && normName(name) === normName(state.myEntry);
+}
+// set of normalized team names the starred entry picked (for cross-panel highlights)
+function myPicksSet() {
+  const me = myMergedEntry();
+  return new Set((me && me.picks ? me.picks : []).filter(Boolean).map(normName));
 }
 
 function renderRooting() {
@@ -643,6 +673,149 @@ function renderRooting() {
     `<i>if that result happens</i>, vs your current ${base != null ? pct(base) : "win %"} — ` +
     `estimated by conditioning the simulations on each outcome (rarer outcomes are noisier).</p>`;
   sec.innerHTML = head(hdr + body + note);
+}
+
+/* ---------- head-to-head: compare any two entries ---------- */
+// entries that have a projection (so they're in the h2h matrix), by win% desc
+function h2hEntries() {
+  return state.merged
+    .filter((e) => e.win_prob != null && e.hasSim !== false)
+    .sort((a, b) => b.win_prob - a.win_prob);
+}
+// normalized team name -> team row (EV, title, out) for the tier compare
+function teamInfoMap() {
+  const m = new Map();
+  (state.sim.teams || []).forEach((t) => m.set(normName(t.name), t));
+  return m;
+}
+
+function renderH2H() {
+  const sec = $("#h2h");
+  if (!sec || !state.sim) return;
+  const h2h = state.sim.h2h;
+  const pool = h2hEntries();
+  // need the pairwise matrix and at least two projected entries
+  if (!h2h || !Array.isArray(h2h.ahead) || pool.length < 2) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const idx = new Map((h2h.order || []).map((n, i) => [n, i])); // folded name -> matrix row
+  const byName = (nm) => pool.find((e) => normName(e.name) === normName(nm));
+
+  // resolve the two sides (respect explicit picks; sensible defaults otherwise)
+  let A = byName(state.h2hA) || byName(state.myEntry) || pool[0];
+  let B = byName(state.h2hB);
+  if (!B || normName(B.name) === normName(A.name)) {
+    const rivalName = A.path && A.path.chief_rival && A.path.chief_rival.name;
+    B = byName(rivalName) || pool.find((e) => normName(e.name) !== normName(A.name));
+  }
+  state.h2hA = A.name; state.h2hB = B.name;
+
+  const opts = (sel) => pool.map((e) =>
+    `<option value="${esc(e.name)}"${normName(e.name) === normName(sel.name) ? " selected" : ""}>` +
+    `${esc(e.name)} · ${pct(e.win_prob)}</option>`).join("");
+
+  // P(A finishes ahead of B) from the shipped matrix
+  const ia = idx.get(normName(A.name)), ib = idx.get(normName(B.name));
+  const aAhead = (ia != null && ib != null) ? h2h.ahead[ia][ib] : null;
+  const bAhead = (ia != null && ib != null) ? h2h.ahead[ib][ia] : null;
+  const aPct = aAhead != null ? Math.round(aAhead * 100) : 50;
+  const bPct = bAhead != null ? Math.round(bAhead * 100) : 50;
+
+  const tinfo = teamInfoMap();
+  const aPicks = A.picks || [], bPicks = B.picks || [];
+  const aSet = new Set(aPicks.filter(Boolean).map(normName));
+  const bSet = new Set(bPicks.filter(Boolean).map(normName));
+  const shared = aPicks.filter((p) => p && bSet.has(normName(p)));
+
+  // tier-by-tier: same pick, or who holds the higher-EV team
+  const tierRows = [];
+  for (let t = 0; t < 6; t++) {
+    const pa = aPicks[t], pb = bPicks[t];
+    const same = pa && pb && normName(pa) === normName(pb);
+    const ta = pa ? tinfo.get(normName(pa)) : null;
+    const tb = pb ? tinfo.get(normName(pb)) : null;
+    const eva = ta ? ta.ev : -1, evb = tb ? tb.ev : -1;
+    const edge = same ? "" : eva > evb ? "a" : evb > eva ? "b" : "";
+    const cell = (nm, info, side) => {
+      const out = info && info.out ? " out" : "";
+      const win = !same && edge === side ? " evwin" : "";
+      return `<span class="h2h-team h2h-${side}${out}${win}">${getFlag(nm)}` +
+        `<span class="h2h-tn">${esc(nm || "—")}</span>` +
+        `${info ? `<span class="h2h-ev">EV ${info.ev}</span>` : ""}</span>`;
+    };
+    tierRows.push(`<div class="h2h-trow${same ? " same" : ""}">
+      <span class="h2h-t">T${t + 1}</span>
+      ${cell(pa, ta, "a")}
+      <span class="h2h-mid">${same ? "same" : "vs"}</span>
+      ${cell(pb, tb, "b")}</div>`);
+  }
+
+  const side = (e, ahead, p, cls) => `
+    <div class="h2h-side ${cls}">
+      <div class="h2h-name">${isMe(e.name) ? "★ " : ""}${esc(e.name)}</div>
+      <div class="h2h-ahead">${ahead != null ? pct(ahead) : "—"}</div>
+      <div class="h2h-sub">finishes ahead</div>
+      <div class="h2h-meta">win ${e.win_prob != null ? pct(e.win_prob) : "—"} · live ${e.live_total ?? "—"} · proj ${e.proj_total ?? "—"}</div>
+    </div>`;
+
+  sec.innerHTML =
+    `<div class="card-head"><h2>Head&#8209;to&#8209;Head <span class="muted">you vs anyone</span></h2>` +
+    `<span class="tag">model</span></div>` +
+    `<div class="h2h-pick">
+       <select class="h2h-sel" data-side="a" aria-label="Entry A">${opts(A)}</select>
+       <span class="h2h-vs">vs</span>
+       <select class="h2h-sel" data-side="b" aria-label="Entry B">${opts(B)}</select>
+     </div>` +
+    `<div class="h2h-top">${side(A, aAhead, aPct, "a")}
+       <div class="h2h-bar"><i class="a" style="width:${aPct}%"></i><i class="b" style="width:${bPct}%"></i></div>
+       ${side(B, bAhead, bPct, "b")}</div>` +
+    `<div class="h2h-shared">${shared.length
+        ? `Shared picks: ${shared.map((s) => `${getFlag(s)} ${esc(s)}`).join(" · ")} — you rise & fall together there.`
+        : "No shared picks — a clean head-to-head."}</div>` +
+    `<div class="h2h-tiers">${tierRows.join("")}</div>` +
+    `<p class="disclaimer">“Finishes ahead” = share of simulations where that entry ends with the better pool ` +
+    `result (points, Golden&nbsp;Boot tiebreak included). Tier <b class="evw">highlight</b> marks the higher-EV pick.</p>`;
+}
+
+/* ---------- biggest games for the whole pool ---------- */
+function renderBigGames() {
+  const sec = $("#biggames");
+  if (!sec || !state.sim) return;
+  const root = state.sim.rooting;
+  const games = (root && Array.isArray(root.games)) ? root.games.filter((g) => g.impact > 0) : [];
+  if (!games.length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const top = [...games].sort((a, b) => (b.impact || 0) - (a.impact || 0)).slice(0, 8);
+  const maxImp = top[0].impact || 1;
+  const movers = (arr, dir) => {
+    if (!arr || !arr.length) return `<span class="bg-none">—</span>`;
+    return arr.slice(0, 3).map((m) =>
+      `<span class="bg-mv" title="${esc(m.name)} +${(m.d * 100).toFixed(1)}pp to win"><b>${esc(m.name.split(" ")[0])}</b> +${(m.d * 100).toFixed(1)}</span>`).join("");
+  };
+  const isKO = (g) => g.round !== "GROUP";
+  const card = (g) => {
+    const when = g.date ? `${dayLabel(g.date)} ${fmtTime(new Date(Date.parse(g.date)))}`
+      : (g.group ? "Grp " + esc(g.group) : (ROUND_LABEL[g.round] || g.round));
+    const lines = [
+      `<div class="bg-out"><span class="bg-k">${getFlag(g.home)} ${esc(g.home)} win</span><span class="bg-v">${movers(g.movers && g.movers.home)}</span></div>`,
+      !isKO(g) ? `<div class="bg-out"><span class="bg-k">Draw</span><span class="bg-v">${movers(g.movers && g.movers.draw)}</span></div>` : "",
+      `<div class="bg-out"><span class="bg-k">${getFlag(g.away)} ${esc(g.away)} win</span><span class="bg-v">${movers(g.movers && g.movers.away)}</span></div>`,
+    ].join("");
+    return `<div class="bg-card">
+      <div class="bg-head">
+        <span class="bg-match">${esc(g.home)}${getFlag(g.home)} <span class="vs">v</span> ${getFlag(g.away)}${esc(g.away)}</span>
+        <span class="bg-when">${when}</span>
+      </div>
+      <div class="bg-imp"><span class="bg-imp-bar"><i style="width:${(g.impact / maxImp) * 100}%"></i></span>
+        <span class="bg-imp-v" title="Total win-% across the pool that swings on this result">${(g.impact * 100).toFixed(0)}pp in play</span></div>
+      <div class="bg-outs">${lines}</div>
+    </div>`;
+  };
+  sec.innerHTML =
+    `<div class="card-head"><h2>Biggest Games <span class="muted">what most shakes up the pool</span></h2>` +
+    `<span class="tag">model</span></div>` +
+    `<div class="bigg-grid">${top.map(card).join("")}</div>` +
+    `<p class="disclaimer">Ranked by how much pool win&nbsp;% swings on the result. ` +
+    `Names show who each outcome helps most (▲ percentage points to win). Conditioned on the simulations.</p>`;
 }
 
 function renderChampion() {
@@ -918,8 +1091,8 @@ function setMyEntry(name) {
     if (name) localStorage.setItem(MY_ENTRY_KEY, name);
     else localStorage.removeItem(MY_ENTRY_KEY);
   } catch (e) { /* storage disabled (private mode) — keep in-memory only */ }
-  renderLeaderboard();
-  renderRooting();
+  if (name) { state.h2hA = name; state.h2hB = null; } // your star becomes side A
+  render(); // refresh every panel that highlights "you"
 }
 function toggleMyEntry(name) {
   const isMine = state.myEntry && normName(state.myEntry) === normName(name);
@@ -951,6 +1124,13 @@ function wire() {
       setMyEntry(null);
       $("#leaderboard").scrollIntoView({ behavior: "smooth", block: "start" });
     }
+  });
+  // head-to-head selectors
+  const h2hSec = $("#h2h");
+  if (h2hSec) h2hSec.addEventListener("change", (ev) => {
+    const sel = ev.target.closest(".h2h-sel"); if (!sel) return;
+    if (sel.dataset.side === "a") state.h2hA = sel.value; else state.h2hB = sel.value;
+    renderH2H();
   });
   const lbHead = document.querySelector("#lb thead");
   if (lbHead) lbHead.addEventListener("click", (ev) => {
