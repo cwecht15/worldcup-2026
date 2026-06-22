@@ -121,22 +121,27 @@ function buildOddsIndex() {
     add(s.home, s.away, trip(s.p_home, s.p_draw, s.p_away), trip(s.m_home, s.m_draw, s.m_away)));
   return idx;
 }
-// "53·26·20" (W·D·Away) or "53–47" for knockouts (no draw); null if no data
-function fmtWDW(t) {
+// labeled win/draw/win, e.g. "Mexico 53% · Draw 26% · Czechia 20%" (no Draw for
+// knockouts); null if the fixture has no data for this source
+function fmtOdds(home, away, t) {
   if (!t || t[0] == null) return null;
-  const p = (x) => Math.round(x * 100);
-  return t[1] == null ? `${p(t[0])}–${p(t[2])}` : `${p(t[0])}·${p(t[1])}·${p(t[2])}`;
+  const p = (x) => Math.round(x * 100) + "%";
+  const seg = (label, v) => `<span class="ov"><span class="on">${label}</span> ${v}</span>`;
+  const parts = [seg(esc(home), p(t[0]))];
+  if (t[1] != null) parts.push(seg("Draw", p(t[1])));
+  parts.push(seg(esc(away), p(t[2])));
+  return parts.join('<span class="osep">·</span>');
 }
 // market + model win/draw/win readout for a fixture (empty string if unknown)
 function oddsWidget(home, away) {
   const o = state.odds && state.odds.get(normName(home) + ">" + normName(away));
   if (!o) return "";
-  const mk = fmtWDW(o.market), md = fmtWDW(o.model);
+  const mk = fmtOdds(home, away, o.market), md = fmtOdds(home, away, o.model);
   if (!mk && !md) return "";
   const row = (lbl, v, cls) =>
     v ? `<span class="od-r ${cls}"><span class="od-l">${lbl}</span>${v}</span>` : "";
-  return `<span class="odds" title="Win · Draw · Away-win (home team's perspective). ` +
-    `MKT = DraftKings, de-vigged · MDL = this model.">${row("MKT", mk, "mkt")}${row("MDL", md, "mdl")}</span>`;
+  return `<span class="odds" title="Chance of each result — home win / draw / away win. ` +
+    `MKT = DraftKings (de-vigged) · MDL = this model.">${row("MKT", mk, "mkt")}${row("MDL", md, "mdl")}</span>`;
 }
 
 // pool entries (from the merged leaderboard) who picked a given team
