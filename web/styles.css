@@ -543,6 +543,18 @@ tr.row.mine td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 .bg-mv b{color:var(--acc);font-weight:600}
 .bg-none{color:var(--txt-mute);font-family:var(--mono);font-size:10px}
 
+/* ---------- match odds (market + model) readout ---------- */
+.odds{display:inline-flex;gap:10px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;align-items:center}
+.od-r{display:inline-flex;align-items:center;gap:5px;color:var(--txt-dim);white-space:nowrap}
+.od-l{font-size:8px;letter-spacing:.6px;color:var(--txt-mute);border:1px solid var(--line);
+  border-radius:4px;padding:1px 4px}
+.od-r.mkt .od-l{color:var(--cyan);border-color:rgba(33,212,253,.32)}
+.od-r.mdl .od-l{color:var(--acc);border-color:rgba(0,230,118,.32)}
+/* placements */
+.sch-odds{grid-column:1/-1;margin-top:5px;padding-top:5px;border-top:1px dashed var(--line-soft)}
+.root-odds{margin-top:8px}
+.bg-odds{margin:8px 0 2px}
+
 /* ====================================================================
    MOBILE — compact, scrollable header + tighter content
    ==================================================================== */

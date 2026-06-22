@@ -636,6 +636,42 @@ def load_upcoming(teams, limit=30):
     return out[:limit]
 
 
+def load_market_odds():
+    """data/match_odds.csv -> {frozenset(folded home, folded away): {...}}.
+
+    This file is already fetched (one Odds-API request, on the twice-daily odds
+    refresh) and used to calibrate the model; here we also surface it so the site
+    can show the bookmaker's de-vigged win/draw/win next to the model's.  No extra
+    API calls — it's read straight off disk."""
+    path = os.path.join(HERE, "data", "match_odds.csv")
+    if not os.path.exists(path):
+        return {}
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                hf, af = results._fold(row["home"]), results._fold(row["away"])
+                out[frozenset((hf, af))] = {
+                    "home": hf,
+                    "p_home": float(row["p_home"]), "p_draw": float(row["p_draw"]),
+                    "p_away": float(row["p_away"])}
+    except Exception as e:
+        print(f"[odds] could not read match_odds.csv ({e}); market odds omitted")
+        return {}
+    return out
+
+
+def market_for(market, home, away):
+    """Bookmaker (win, draw, away) probs for a fixture, oriented to our home/away,
+    or (None, None, None) if the pair isn't priced."""
+    rec = market.get(frozenset((results._fold(home), results._fold(away))))
+    if not rec:
+        return (None, None, None)
+    if rec["home"] == results._fold(home):
+        return (rec["p_home"], rec["p_draw"], rec["p_away"])
+    return (rec["p_away"], rec["p_draw"], rec["p_home"])   # book listed it reversed
+
+
 def remaining_group_fixtures(teams, res):
     """Fallback when the feed carries no 'upcoming' list: the group round-robin
     games not yet played, shaped like load_upcoming() entries (undated).  Mirrors
@@ -661,24 +697,20 @@ def remaining_group_fixtures(teams, res):
     return out
 
 
-def build_track(upcoming, teams, max_days=2, cap=14):
-    """From load_upcoming() output, pick the next `max_days` distinct match-days
-    of fully-resolved games (capped at `cap`) for the "what to root for" analysis.
+def build_track(upcoming, teams, cap=30):
+    """From load_upcoming() output, the fully-resolved upcoming fixtures (capped at
+    `cap`) to analyze.  Every tracked game gets per-sim outcomes recorded, which
+    yields its model win/draw/win odds, field impact, and per-entry conditional
+    win % (the frontend focuses "Root For" on the nearest match-days).
 
     Returns (track, games_meta) — parallel lists.  `track` feeds simulate(track=);
     `games_meta` carries the public matchup info aligned to sim.tracked_outcomes."""
     nteam = teams.n
-    track, games_meta, day_keys = [], [], []
+    track, games_meta = [], []
     for u in upcoming:
         i, j = u.get("i"), u.get("j")
         if i is None or j is None:          # both teams must be known to analyze
             continue
-        day = (u["date"] or "")[:10]        # UTC calendar day
-        if day:
-            if day not in day_keys:
-                if len(day_keys) >= max_days:
-                    continue                # past the first max_days match-days
-                day_keys.append(day)
         lo, hi = (i, j) if i < j else (j, i)
         track.append({"code": lo * nteam + hi, "home_idx": i, "away_idx": j})
         games_meta.append({"date": u["date"], "round": u["round"],
@@ -688,8 +720,9 @@ def build_track(upcoming, teams, max_days=2, cap=14):
     return track, games_meta
 
 
-def build_rooting(entries, pool, sim, games_meta):
-    """Per-entry 'what to root for' for each tracked upcoming game.
+def build_rooting(entries, pool, sim, games_meta, market=None):
+    """Per-entry 'what to root for' for each tracked upcoming game, plus each
+    game's model and market (bookmaker) win/draw/win odds.
 
     Conditions the existing Monte Carlo sample on each game's outcome: the win %
     given an outcome O is just the mean win-share over the sims where O happened.
@@ -698,6 +731,7 @@ def build_rooting(entries, pool, sim, games_meta):
     oc = sim.tracked_outcomes
     if oc is None or oc.shape[1] == 0 or not games_meta:
         return None
+    market = market or {}
     share = pool["share"]                                   # [E, N]
     base = pool["win_prob"]                                 # [E] baseline win %
     E = len(entries)
@@ -708,9 +742,13 @@ def build_rooting(entries, pool, sim, games_meta):
         col = oc[:, g]
         is_ko = meta["round"] != "GROUP"
         n_def = int((col != -1).sum())                      # sims where they met
+        mh, md, ma = market_for(market, meta["home"], meta["away"])
         gmeta = {"date": meta["date"], "round": meta["round"],
                  "group": meta["group"], "home": meta["home"], "away": meta["away"],
-                 "p_home": None, "p_draw": None, "p_away": None}
+                 "p_home": None, "p_draw": None, "p_away": None,   # model win/draw/win
+                 "m_home": round(mh, 4) if mh is not None else None,   # market (book)
+                 "m_draw": round(md, 4) if md is not None else None,
+                 "m_away": round(ma, 4) if ma is not None else None}
         keys = {0: "p_home", 1: "p_draw", 2: "p_away"}
         cond = {}                                           # outcome -> [E] or None
         for o in (0, 1, 2):
@@ -908,6 +946,10 @@ def main():
             remaining_group_fixtures(teams0, res), teams0)
     if track:
         print(f"[rooting] tracking {len(track)} upcoming games for win% conditioning")
+    # bookmaker odds already on disk (from the twice-daily refresh) — no API call
+    market = load_market_odds()
+    if market:
+        print(f"[odds] loaded {len(market)} priced fixtures from match_odds.csv")
 
     n_full = args.n if args.n is not None else (8000 if args.quick else 200_000)
     print(f"[build] running engine (n_sims={n_full:,})...")
@@ -933,7 +975,7 @@ def main():
     pool = resolve_pool(entries, scores, sim, gb_goals, gb_players)
     paths = build_paths(entries, scores, pool, sim, teams)
     finals = compute_finals(entries, sim)
-    rooting = build_rooting(entries, pool, sim, rooting_games)
+    rooting = build_rooting(entries, pool, sim, rooting_games, market=market)
     # pairwise head-to-head: P(a finishes ahead of b), aligned to `entries` order
     h2h_mat = build_h2h(pool["key"])
     h2h = {"order": [results._fold(e["name"]) for e in entries],
@@ -947,9 +989,24 @@ def main():
                            real_team_goals=rtg, real_player_goals=rpg)
     groups = build_groups(teams, sim, res)
     recent = build_recent_results(teams, res)
-    # public schedule list drops the internal resolved indices used for tracking
-    upcoming_public = [{k: v for k, v in u.items() if k not in ("i", "j")}
-                       for u in upcoming]
+    # public schedule list drops the internal resolved indices used for tracking,
+    # and gains model + market win/draw/win odds (model from the tracked games'
+    # outcome frequencies; market from match_odds.csv — both already computed)
+    model_by_pair = {}
+    for gm in (rooting["games"] if rooting else []):
+        model_by_pair[frozenset((results._fold(gm["home"]), results._fold(gm["away"])))] = \
+            (gm["p_home"], gm["p_draw"], gm["p_away"])
+    upcoming_public = []
+    for u in upcoming:
+        pub = {k: v for k, v in u.items() if k not in ("i", "j")}
+        pair = frozenset((results._fold(u["home"]), results._fold(u["away"])))
+        mph, mpd, mpa = model_by_pair.get(pair, (None, None, None))
+        mh, md, ma = market_for(market, u["home"], u["away"])
+        pub.update(p_home=mph, p_draw=mpd, p_away=mpa,
+                   m_home=round(mh, 4) if mh is not None else None,
+                   m_draw=round(md, 4) if md is not None else None,
+                   m_away=round(ma, 4) if ma is not None else None)
+        upcoming_public.append(pub)
     prev = None if args.no_prev else fetch_prev(args.prev_url)
 
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")

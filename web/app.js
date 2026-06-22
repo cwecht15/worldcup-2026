@@ -100,6 +100,45 @@ function dayLabel(date) {
   return fmtDay(d);
 }
 
+/* ---------- match odds (model + market) for upcoming fixtures ---------- */
+// directed pair "home>away" -> {model:[h,d,a]|null, market:[h,d,a]|null}; both
+// orientations stored so a fixture resolves regardless of which side is "home".
+function buildOddsIndex() {
+  const idx = new Map();
+  const trip = (h, d, a) => (h == null ? null : [h, d, a]);
+  const swap = (t) => (t ? [t[2], t[1], t[0]] : null);
+  const add = (home, away, model, market) => {
+    if (!model && !market) return;
+    const k = normName(home) + ">" + normName(away);
+    if (!idx.has(k)) idx.set(k, { model, market });
+    const rk = normName(away) + ">" + normName(home);
+    if (!idx.has(rk)) idx.set(rk, { model: swap(model), market: swap(market) });
+  };
+  const sim = state.sim || {};
+  ((sim.rooting && sim.rooting.games) || []).forEach((g) =>
+    add(g.home, g.away, trip(g.p_home, g.p_draw, g.p_away), trip(g.m_home, g.m_draw, g.m_away)));
+  (sim.schedule_upcoming || []).forEach((s) =>
+    add(s.home, s.away, trip(s.p_home, s.p_draw, s.p_away), trip(s.m_home, s.m_draw, s.m_away)));
+  return idx;
+}
+// "53·26·20" (W·D·Away) or "53–47" for knockouts (no draw); null if no data
+function fmtWDW(t) {
+  if (!t || t[0] == null) return null;
+  const p = (x) => Math.round(x * 100);
+  return t[1] == null ? `${p(t[0])}–${p(t[2])}` : `${p(t[0])}·${p(t[1])}·${p(t[2])}`;
+}
+// market + model win/draw/win readout for a fixture (empty string if unknown)
+function oddsWidget(home, away) {
+  const o = state.odds && state.odds.get(normName(home) + ">" + normName(away));
+  if (!o) return "";
+  const mk = fmtWDW(o.market), md = fmtWDW(o.model);
+  if (!mk && !md) return "";
+  const row = (lbl, v, cls) =>
+    v ? `<span class="od-r ${cls}"><span class="od-l">${lbl}</span>${v}</span>` : "";
+  return `<span class="odds" title="Win · Draw · Away-win (home team's perspective). ` +
+    `MKT = DraftKings, de-vigged · MDL = this model.">${row("MKT", mk, "mkt")}${row("MDL", md, "mdl")}</span>`;
+}
+
 // pool entries (from the merged leaderboard) who picked a given team
 function ownersOf(teamName) {
   const key = normName(teamName);
@@ -200,6 +239,7 @@ function merge() {
 function render() {
   if (!state.sim) return;
   state.elim = new Set((state.sim.teams || []).filter((t) => t.out).map((t) => t.name));
+  state.odds = buildOddsIndex();
   renderProvenance();
   renderResultsBanner();
   renderUpdateStatus();
@@ -457,12 +497,14 @@ function renderUpcoming() {
     const rd = m.date
       ? (ROUND_LABEL[m.round] || m.round) + (m.group ? " · " + esc(m.group) : "")
       : (m.round === "GROUP" ? "" : (ROUND_LABEL[m.round] || m.round)); // group letter already in "when"
+    const odds = oddsWidget(m.home, m.away);
     return `<div class="sch-match">
       <span class="when">${when}</span>
       <span class="teams"><span class="h${eh}">${esc(m.home)}${getFlag(m.home)}</span>
         <span class="vs">v</span>
         <span class="a${ea}">${getFlag(m.away)}${esc(m.away)}</span></span>
       <span class="rd">${rd}</span>
+      ${odds ? `<span class="sch-odds">${odds}</span>` : ""}
     </div>`;
   };
   let body;
@@ -616,7 +658,12 @@ function renderRooting() {
   }).filter((b) => b.cells.length);
 
   if (!built.length) { sec.hidden = true; return; }
-  const maxImpact = Math.max(...built.map((b) => b.impact));
+  // focus the rooting guide on the next two distinct match-days
+  const dayOrder = [];
+  built.forEach((b) => { const k = dayLabel(b.gm.date); if (!dayOrder.includes(k)) dayOrder.push(k); });
+  const keepDays = new Set(dayOrder.slice(0, 2));
+  const focus = built.filter((b) => keepDays.has(dayLabel(b.gm.date)));
+  const maxImpact = Math.max(...focus.map((b) => b.impact));
 
   const chip = (b, c) => {
     const d = c.val - base;            // change vs baseline, in probability
@@ -647,13 +694,14 @@ function renderRooting() {
         <span class="root-rd">${rd}${big}</span>
       </div>
       <div class="root-chips">${b.cells.map((c) => chip(b, c)).join("")}</div>
+      ${oddsWidget(gm.home, gm.away) ? `<div class="root-odds">${oddsWidget(gm.home, gm.away)}</div>` : ""}
       <div class="root-foot">${rec}</div>
     </div>`;
   };
 
   // group chronologically by local day (Today / Tomorrow / weekday)
   const days = new Map();
-  built.forEach((b) => {
+  focus.forEach((b) => {
     const k = dayLabel(b.gm.date);
     if (!days.has(k)) days.set(k, []);
     days.get(k).push(b);
@@ -807,6 +855,7 @@ function renderBigGames() {
       </div>
       <div class="bg-imp"><span class="bg-imp-bar"><i style="width:${(g.impact / maxImp) * 100}%"></i></span>
         <span class="bg-imp-v" title="Total win-% across the pool that swings on this result">${(g.impact * 100).toFixed(0)}pp in play</span></div>
+      ${oddsWidget(g.home, g.away) ? `<div class="bg-odds">${oddsWidget(g.home, g.away)}</div>` : ""}
       <div class="bg-outs">${lines}</div>
     </div>`;
   };
