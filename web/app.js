@@ -17,6 +17,12 @@ const RESULTS_SWEEP_UTC = [19, 21, 23, 1, 3, 5, 7];
 const ODDS_REFRESH_UTC = [19, 5];
 const ROUND_LABEL = { GROUP: "Group", R32: "Round of 32", R16: "Round of 16",
   QF: "Quarterfinal", SF: "Semifinal", FINAL: "Final" };
+// knockout rounds, the pool points for winning each, and the per-team win-odds
+// field on the teams table (P(team wins that round), conditioned on results so far)
+const KO_ROUNDS = ["R32", "R16", "QF", "SF", "FINAL"];
+const KO_PTS = { R32: 5, R16: 7, QF: 10, SF: 15, FINAL: 20 };
+const KO_COL = { R32: "R32", R16: "R16", QF: "QF", SF: "SF", FINAL: "Champ" };
+const KO_PROB_KEY = { R32: "winR32", R16: "winR16", QF: "winQF", SF: "winSF", FINAL: "title" };
 
 const MY_ENTRY_KEY = "wc_my_entry"; // localStorage: the visitor's starred entry
 
@@ -27,6 +33,7 @@ const state = {
   open: new Set(), countdown: REFRESH,
   myEntry: null, // display name of the entry the visitor starred as "mine"
   h2hA: null, h2hB: null, // head-to-head compare selections (display names)
+  bracketTeam: null, // team whose path is highlighted in the knockout bracket
 };
 
 // how each sortable column reads a value off an entry
@@ -244,6 +251,7 @@ function merge() {
 function render() {
   if (!state.sim) return;
   state.elim = new Set((state.sim.teams || []).filter((t) => t.out).map((t) => t.name));
+  state.teamByName = new Map((state.sim.teams || []).map((t) => [normName(t.name), t]));
   state.odds = buildOddsIndex();
   renderProvenance();
   renderResultsBanner();
@@ -256,6 +264,7 @@ function render() {
   renderH2H();
   renderMovers();
   renderRecentResults();
+  renderBracket();
   renderGroups();
   renderUpcoming();
   renderBigGames();
@@ -287,6 +296,159 @@ function renderMovers() {
     `${up.map(row).join("") || '<div class="gnone">no risers this update</div>'}</div>` +
     `<div class="mv-col"><div class="mv-h down">▼ Falling</div>` +
     `${down.map(row).join("") || '<div class="gnone">no fallers this update</div>'}</div>`;
+}
+
+/* ---------- knockout bracket (path to the title) ---------- */
+// per-team model row (reach-round / title odds), keyed by name
+function teamInfo(name) {
+  return (state.teamByName && state.teamByName.get(normName(name))) || null;
+}
+
+/* ---------- "what your entry needs" (per-stage + alive/clinch status) ---------- */
+// highest locked-in floor in the field; an entry whose best case can't reach it
+// can no longer win the pool ("blocked")
+function leaderFloor() {
+  const f = state.sim.field || {};
+  if (f.leader_floor != null) return f.leader_floor;
+  return (state.sim.entries || []).reduce(
+    (m, e) => (e.min_final != null ? Math.max(m, e.min_final) : m), 0);
+}
+// {alive, cushion, html} — is this entry still able to win, and by how much margin
+function aliveStatus(e) {
+  const lf = leaderFloor();
+  if (e.blocked)
+    return { alive: false, cushion: 0, html:
+      `<span class="as-pill out">✖ out of the pool</span>` +
+      `<span class="as-txt">best case <b>${e.max_final}</b> can't catch the leader's locked <b>${lf}</b>.</span>` };
+  const cush = e.max_final != null ? e.max_final - lf : null;
+  return { alive: true, cushion: cush, html:
+    `<span class="as-pill live">✓ still alive</span>` +
+    (cush != null
+      ? `<span class="as-txt">best case <b>${e.max_final}</b> vs leader's locked <b>${lf}</b> — ` +
+        `<b>${cush}</b>-pt cushion before elimination.</span>`
+      : "") };
+}
+// the model's chance an entry's pick wins a given knockout round (banks the points)
+function pickRoundProb(name, rnd) {
+  const info = teamInfo(name);
+  const v = info ? info[KO_PROB_KEY[rnd]] : null;
+  return v == null ? null : v;
+}
+// stage-by-stage ladder: for each of the entry's picks, its odds to win each
+// remaining round (= what the entry needs at every stage to keep banking points)
+function stageNeedsHTML(e) {
+  if (!e || !e.picks || !e.picks.length || !e.path) return "";
+  const elim = state.elim || new Set();
+  const path = e.path || {};
+  const linch = path.linchpin && path.linchpin.team;
+  const champWin = path.champion_when_win && path.champion_when_win.team;
+  const head = `<div class="sn-row sn-head"><span class="sn-team">your pick</span>` +
+    KO_ROUNDS.map((r) => `<span class="sn-c">${KO_COL[r]}<small>+${KO_PTS[r]}</small></span>`).join("") +
+    `</div>`;
+  const alive = [], dead = [];
+  e.picks.forEach((nm, i) => { if (nm) (elim.has(nm) ? dead : alive).push({ nm, tier: i + 1 }); });
+  const rowFor = ({ nm, tier }) => {
+    const isLinch = linch && normName(nm) === normName(linch);
+    const cells = KO_ROUNDS.map((r) => {
+      const p = pickRoundProb(nm, r);
+      if (p == null) return `<span class="sn-c"><span class="sn-na">–</span></span>`;
+      const need = champWin && r === "FINAL" && normName(nm) === normName(champWin);
+      return `<span class="sn-c${need ? " need" : ""}"><span class="sn-bar"><i style="width:${Math.min(100, p)}%"></i></span>` +
+        `<span class="sn-p">${Math.round(p)}%</span></span>`;
+    }).join("");
+    return `<div class="sn-row${isLinch ? " sn-linch" : ""}"><span class="sn-team">${getFlag(nm)} ` +
+      `<span class="sn-nm">${esc(nm)}${isLinch ? " ⚡" : ""}</span><small>T${tier}</small></span>${cells}</div>`;
+  };
+  const deadRow = ({ nm, tier }) =>
+    `<div class="sn-row sn-dead"><span class="sn-team">${getFlag(nm)} ` +
+    `<span class="sn-nm">${esc(nm)}</span><small>T${tier}</small></span>` +
+    `<span class="sn-out">out — group points only</span></div>`;
+  const sum = path.summary ? `<p class="sn-sum">${esc(path.summary)}</p>` : "";
+  return `<div class="stage-needs">${sum}<div class="sn-table">${head}` +
+    alive.map(rowFor).join("") + dead.map(deadRow).join("") + `</div>` +
+    `<p class="sn-note">Each % is the model's chance your pick <i>wins that round</i> (and banks the ` +
+    `points), given results so far. ⚡ = your linchpin · highlighted = the title you usually need.</p></div>`;
+}
+
+function renderBracket() {
+  const sec = $("#bracket");
+  const b = state.sim.bracket;
+  if (!b || !b.rounds || !(b.rounds.R32 || []).length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const order = b.order || ["R32", "R16", "QF", "SF", "FINAL"];
+  const myTeams = myPicksSet();
+  const elim = state.elim || new Set();
+  const sel = state.bracketTeam ? normName(state.bracketTeam) : null;
+
+  // nodes on the selected team's path = its R32 slot + each ancestor (k >> round)
+  const onPath = new Set();
+  if (sel) {
+    const idx = (b.rounds.R32 || []).findIndex(
+      (n) => n && (normName(n.home) === sel || normName(n.away) === sel));
+    if (idx >= 0) order.forEach((rnd, ri) => onPath.add(rnd + ":" + (idx >> ri)));
+  }
+
+  const teamRow = (name, side, node) => {
+    if (!name) return `<span class="bk-team tbd"><span class="bk-nm">—</span></span>`;
+    const info = teamInfo(name);
+    const isWin = node.played && node.winner && normName(node.winner) === normName(name);
+    const lost = node.played && node.winner && !isWin;
+    const mine = myTeams.has(normName(name));
+    let val = "";
+    if (node.played) val = `<span class="bk-sc">${side === "home" ? node.hg : node.ag}</span>`;
+    else {
+      const p = side === "home" ? node.p_home : node.p_away;
+      if (p != null) val = `<span class="bk-p">${Math.round(p * 100)}%</span>`;
+    }
+    const cls = [isWin ? "win" : "", lost ? "lost" : "", mine ? "mine" : "",
+      sel === normName(name) ? "sel" : ""].filter(Boolean).join(" ");
+    const tip = esc(name) + (info ? ` · ${info.title}% to win it all` : "");
+    return `<button class="bk-team ${cls}" data-team="${esc(name)}" title="${tip}">` +
+      `<span class="bk-fl">${getFlag(name)}</span>` +
+      `<span class="bk-nm">${esc(name)}${mine ? " ★" : ""}</span>${val}</button>`;
+  };
+
+  const nodeHTML = (node, rnd, ni) => {
+    const hot = onPath.has(rnd + ":" + ni) ? " hot" : "";
+    const done = node.played ? " done" : "";
+    const tbd = node.tbd ? " tbd" : "";
+    return `<div class="bk-match${done}${tbd}${hot}">` +
+      teamRow(node.home, "home", node) + teamRow(node.away, "away", node) + `</div>`;
+  };
+
+  const cols = order.map((rnd) => {
+    const nodes = b.rounds[rnd] || [];
+    return `<div class="bk-col bk-${rnd}"><div class="bk-ch">${ROUND_LABEL[rnd] || rnd}</div>` +
+      `<div class="bk-col-in">${nodes.map((n, ni) => nodeHTML(n, rnd, ni)).join("")}</div></div>`;
+  }).join("");
+  const champCol = `<div class="bk-col bk-trophy-col"><div class="bk-ch">Champion</div>` +
+    `<div class="bk-col-in"><div class="bk-trophy">🏆 ${b.champion
+      ? `${getFlag(b.champion)} <b>${esc(b.champion)}</b>`
+      : `<span class="muted">TBD</span>`}</div></div></div>`;
+  $("#bracket-body").innerHTML = `<div class="bk-scroll"><div class="bk-grid">${cols}${champCol}</div></div>`;
+
+  // tag: alive count, or the selected team's title odds
+  const nOut = (state.sim.teams || []).filter((t) => t.out).length;
+  const alive = (state.sim.teams || []).length - nOut;
+  const selInfo = sel ? teamInfo(state.bracketTeam) : null;
+  $("#bracket-tag").textContent = selInfo
+    ? `${state.bracketTeam} · ${selInfo.title}% to win it all`
+    : `${alive} alive · ${nOut} out`;
+
+  // path readout for the selected team
+  let note;
+  if (selInfo) {
+    const stops = [["R16", selInfo.winR32], ["QF", selInfo.winR16], ["SF", selInfo.winQF],
+      ["Final", selInfo.winSF], ["Champion", selInfo.title]];
+    note = `<span class="bk-path-h">${getFlag(state.bracketTeam)} ${esc(state.bracketTeam)}'s path</span>` +
+      stops.map(([k, v]) => `<span class="bk-stop"><span class="bk-stk">${k}</span>` +
+        `<span class="bk-stv">${(v ?? 0)}%</span></span>`).join("") +
+      `<button class="bk-clear" data-bkclear>clear</button>`;
+  } else {
+    note = "Tap any team to trace its odds to reach each round and win it all. " +
+      "★ = your picks · scores show for finished games, model win% for upcoming.";
+  }
+  $("#bracket-note").innerHTML = note;
 }
 
 function renderGroups() {
@@ -346,7 +508,9 @@ function renderResultsBanner() {
   if (!r.conditional) { el.hidden = true; return; }
   el.hidden = false;
   const nOut = state.sim.teams.filter((t) => t.out).length;
-  const nBlk = (state.sim.field && state.sim.field.n_blocked) || 0;
+  const f = state.sim.field || {};
+  const E = f.n_entries || (state.sim.entries || []).length;
+  const nAlive = f.n_alive != null ? f.n_alive : E - (f.n_blocked || 0);
   const d = Date.parse(r.as_of);
   const ds = isNaN(d) ? null
     : new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -355,7 +519,7 @@ function renderResultsBanner() {
     `<span>Projections account for <b>${r.matches_played}</b> completed matches` +
     `${ds ? ` (through <b>${esc(ds)}</b>)` : ""}.</span>` +
     `<span class="sep">•</span><span><b>${nOut}</b> teams eliminated</span>` +
-    `<span class="sep">•</span><span><b>${nBlk}</b> ${nBlk === 1 ? "entry" : "entries"} blocked from winning</span>`;
+    `<span class="sep">•</span><span><b>${nAlive}</b> of <b>${E}</b> entries can still win the pool</span>`;
 }
 
 function renderUpdateStatus() {
@@ -725,7 +889,14 @@ function renderRooting() {
   const note = `<p class="disclaimer">Each percentage is your modeled chance to win the pool ` +
     `<i>if that result happens</i>, vs your current ${base != null ? pct(base) : "win %"} — ` +
     `estimated by conditioning the simulations on each outcome (rarer outcomes are noisier).</p>`;
-  sec.innerHTML = head(hdr + body + note);
+  // alive/clinch status + the full stage-by-stage "what you need" ladder
+  const cond = state.sim.meta.results && state.sim.meta.results.conditional;
+  const status = cond && me.max_final != null
+    ? `<div class="alive-status${me.blocked ? " out" : ""}">${aliveStatus(me).html}</div>` : "";
+  const stageBlock = cond
+    ? `<div class="sn-block root-needs"><div class="ch">What you need — by stage</div>${stageNeedsHTML(me)}</div>`
+    : "";
+  sec.innerHTML = head(hdr + status + stageBlock + body + note);
 }
 
 /* ---------- head-to-head: compare any two entries ---------- */
@@ -1046,7 +1217,13 @@ function renderDetail(e) {
     p.typical_winning_score ? { k: "Typical winning score", v: String(p.typical_winning_score) } : null,
     p.chief_rival ? { k: "Chief rival", v: `${esc(p.chief_rival.name)} (${p.chief_rival.pct}%)` } : null,
   ].filter(Boolean);
+  // alive / elimination status + per-stage needs (knockout era only)
+  const status = cond && e.max_final != null
+    ? `<div class="alive-status${e.blocked ? " out" : ""}">${aliveStatus(e).html}</div>` : "";
+  const needs = cond
+    ? `<div class="sn-block"><div class="ch">What you need — by stage</div>${stageNeedsHTML(e)}</div>` : "";
   return `<tr class="detail"><td colspan="7"><div class="detail-inner">
+    ${status}
     <div>
       <div class="path-summary"><span class="lead">Path to victory</span>${esc(p.summary)}</div>
       <div class="path-stats">${stats.map((s) =>
@@ -1055,6 +1232,7 @@ function renderDetail(e) {
       ${rivalWhy(p)}
     </div>
     <div class="carries"><div class="ch">Points carried (when you win)</div>${carries}</div>
+    ${needs}
   </div></td></tr>`;
 }
 
@@ -1195,6 +1373,17 @@ function wire() {
       state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
     else { state.sortKey = key; state.sortDir = SORT_DEFAULT_DIR[key] || "desc"; }
     renderLeaderboard();
+  });
+  // knockout bracket: tap a team to trace its path; "clear" resets
+  const bk = $("#bracket");
+  if (bk) bk.addEventListener("click", (ev) => {
+    if (ev.target.closest("[data-bkclear]")) { state.bracketTeam = null; renderBracket(); return; }
+    const t = ev.target.closest(".bk-team[data-team]");
+    if (!t) return;
+    const name = t.dataset.team;
+    const same = state.bracketTeam && normName(state.bracketTeam) === normName(name);
+    state.bracketTeam = same ? null : name;
+    renderBracket();
   });
   $("#team-sort").addEventListener("click", (ev) => {
     const b = ev.target.closest("button"); if (!b) return;

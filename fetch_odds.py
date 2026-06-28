@@ -135,12 +135,17 @@ def fetch_match_odds():
                         p["away"] = american_to_prob(outcome["price"])
                     elif outcome["name"] == "Draw":
                         p["draw"] = american_to_prob(outcome["price"])
-                if len(p) == 3:
-                    tot = p["home"] + p["draw"] + p["away"]
+                # group fixtures price 3 ways (home/draw/away); knockout h2h has no
+                # draw (2-way) -> accept either, recording p_draw=0 when absent.
+                if "home" in p and "away" in p:
+                    draw = p.get("draw", 0.0)
+                    tot = p["home"] + draw + p["away"]
+                    if tot <= 0:
+                        continue
                     rows.append({
                         "home": home, "away": away,
                         "p_home": p["home"] / tot,
-                        "p_draw": p["draw"] / tot,
+                        "p_draw": draw / tot,
                         "p_away": p["away"] / tot,
                         "commence_time": event.get("commence_time", ""),
                     })

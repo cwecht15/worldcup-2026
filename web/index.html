@@ -27,6 +27,7 @@
     <a href="#h2h">Head-to-Head</a>
     <a href="#champion">Champion</a>
     <a href="#recent">Results</a>
+    <a href="#bracket">Bracket</a>
     <a href="#groups">Groups</a>
     <a href="#biggames">Big Games</a>
     <a href="#schedule">Schedule</a>
@@ -100,6 +101,16 @@
 
   <!-- RECENT RESULTS (finished games + who they helped/hurt) -->
   <section class="card wide" id="recent" hidden></section>
+
+  <!-- KNOCKOUT BRACKET (appears once the groups are decided) -->
+  <section class="card wide" id="bracket" hidden>
+    <div class="card-head">
+      <h2>Knockout Bracket <span class="muted">tap a team for its path</span></h2>
+      <span class="tag" id="bracket-tag">bracket</span>
+    </div>
+    <div id="bracket-body"></div>
+    <p class="disclaimer" id="bracket-note"></p>
+  </section>
 
   <!-- GROUPS -->
   <section class="card wide" id="groups">

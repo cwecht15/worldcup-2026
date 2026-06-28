@@ -579,6 +579,148 @@ def build_groups(teams, sim, res):
     return groups
 
 
+KO_ROUNDS = ("R32", "R16", "QF", "SF", "FINAL")
+
+
+def build_bracket(teams, sim, res, upcoming, market, model_by_pair):
+    """Resolved knockout bracket (R32 -> Final) once the groups are decided.
+
+    Returns None until the 16 Round-of-32 matchups can be resolved from real
+    standings + the fixture feed (so the site degrades to the existing views
+    rather than ever drawing a wrong bracket).  Each round is a list of nodes,
+    top-to-bottom in bracket order; adjacent nodes fold into the next round, so
+    the frontend can draw the whole tree.  A node carries the two teams (real
+    where known, else null = TBD), the score if the game has been played, and
+    model + market win odds while it is still upcoming.  Per-team odds to reach
+    each round / win it all already live in the `teams` table."""
+    if not res:
+        return None
+    nteam = teams.n
+
+    # ---- group standings -> winner / runner-up per group ----
+    rec = {i: {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0} for i in range(nteam)}
+    for m in res.matches:
+        if m["round"] != "GROUP":
+            continue
+        i, j, gi, gj = m["i"], m["j"], m["gi"], m["gj"]
+        for a, gfa, gaa in ((i, gi, gj), (j, gj, gi)):
+            r = rec[a]; r["gf"] += gfa; r["ga"] += gaa
+            r["w"] += gfa > gaa; r["d"] += gfa == gaa; r["l"] += gfa < gaa
+
+    def standkey(i):
+        r = rec[i]
+        return (r["w"] * 3 + r["d"], r["gf"] - r["ga"], r["gf"])
+
+    winner, runner = {}, {}
+    for g, members in teams.groups.items():
+        ordered = sorted(members, key=standkey, reverse=True)
+        if len(ordered) >= 2:
+            winner[g], runner[g] = ordered[0], ordered[1]
+
+    # ---- every actual knockout pairing (played + upcoming) -> info ----
+    pairinfo = {}     # frozenset(i,j) -> {home, away, date, played, hg, ag, winner, round}
+
+    def winner_idx(i, j, gi, gj):
+        lo, hi = (i, j) if i < j else (j, i)
+        w = int(res.winner[lo * nteam + hi])
+        return w if w >= 0 else (i if gi >= gj else j)
+
+    for m in res.matches:
+        if m["round"] not in KO_ROUNDS:
+            continue
+        i, j = m["i"], m["j"]
+        pairinfo[frozenset((i, j))] = {
+            "home": i, "away": j, "date": m.get("date"), "played": True,
+            "hg": int(m["gi"]), "ag": int(m["gj"]), "round": m["round"],
+            "winner": winner_idx(i, j, m["gi"], m["gj"])}
+    for u in upcoming:
+        if u["round"] not in KO_ROUNDS:
+            continue
+        i, j = u.get("i"), u.get("j")
+        if i is None or j is None or frozenset((i, j)) in pairinfo:
+            continue
+        pairinfo[frozenset((i, j))] = {
+            "home": i, "away": j, "date": u.get("date"), "played": False,
+            "winner": None, "round": u["round"]}
+
+    # ---- resolve the 16 R32 matchups, in bracket-fold order ----
+    r32_set = {k for k, v in pairinfo.items() if v["round"] == "R32"}
+    team_to_r32 = {}
+    for k in r32_set:
+        a, b = tuple(k)
+        team_to_r32[a] = k; team_to_r32[b] = k
+
+    def resolve_wr(part):
+        kind, ref = part
+        if kind == "W":
+            return winner.get(ref)
+        if kind == "R":
+            return runner.get(ref)
+        return None                                   # ("3", slot): from the feed pair
+
+    r32_pairs = []
+    for mnum in wcdata.BRACKET_ORDER:
+        p1, p2 = wcdata.R32_MATCHES[mnum]
+        a, b = resolve_wr(p1), resolve_wr(p2)
+        known = a if a is not None else b
+        if known is None or known not in team_to_r32:
+            return None
+        key = team_to_r32[known]
+        if a is None or b is None:                    # fill the third-place slot
+            other = next(t for t in key if t != known)
+            a = other if a is None else a
+            b = other if b is None else b
+        if frozenset((a, b)) != key:                  # resolved pair must match reality
+            return None
+        r32_pairs.append(key)
+    if len(set(r32_pairs)) != 16 or set(r32_pairs) != r32_set:
+        return None                                   # not a clean permutation -> bail
+
+    # ---- assemble nodes round-by-round, folding winners upward ----
+    def node_for(key):
+        info = pairinfo.get(key)
+        hi_, ai_ = (info["home"], info["away"]) if info else tuple(key)
+        node = {"home": teams.names[hi_], "away": teams.names[ai_], "tbd": False,
+                "date": info.get("date") if info else None}
+        if info and info["played"]:
+            node.update(played=True, hg=info["hg"], ag=info["ag"],
+                        winner=teams.names[info["winner"]])
+        else:
+            node["played"] = False
+            mph, _mpd, mpa = model_by_pair.get(
+                frozenset((results._fold(node["home"]), results._fold(node["away"]))),
+                (None, None, None))
+            mh, _md, ma = market_for(market, node["home"], node["away"], is_ko=True)
+            node.update(p_home=mph, p_away=mpa,
+                        m_home=round(mh, 4) if mh is not None else None,
+                        m_away=round(ma, 4) if ma is not None else None)
+        return node
+
+    def win_of(key):
+        info = pairinfo.get(key)
+        return info["winner"] if (info and info["played"]) else None
+
+    rounds = {"R32": [node_for(k) for k in r32_pairs]}
+    advancing = [win_of(k) for k in r32_pairs]
+    for rnd in KO_ROUNDS[1:]:
+        nodes, nxt = [], []
+        for k in range(0, len(advancing), 2):
+            a, b = advancing[k], advancing[k + 1]
+            if a is not None and b is not None:
+                key = frozenset((a, b))
+                nodes.append(node_for(key)); nxt.append(win_of(key))
+            else:
+                nodes.append({"tbd": True,
+                              "home": teams.names[a] if a is not None else None,
+                              "away": teams.names[b] if b is not None else None})
+                nxt.append(None)
+        rounds[rnd] = nodes
+        advancing = nxt
+    champ = advancing[0] if advancing else None
+    return {"order": list(KO_ROUNDS), "rounds": rounds,
+            "champion": teams.names[champ] if champ is not None else None}
+
+
 def _group_letter(g):
     """'GROUP_A' / 'Group A' -> 'A'; anything else -> None."""
     if not g:
@@ -651,9 +793,11 @@ def load_market_odds():
         with open(path, encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 hf, af = results._fold(row["home"]), results._fold(row["away"])
+                draw = str(row.get("p_draw", "")).strip()   # 0/blank for knockouts
                 out[frozenset((hf, af))] = {
                     "home": hf,
-                    "p_home": float(row["p_home"]), "p_draw": float(row["p_draw"]),
+                    "p_home": float(row["p_home"]),
+                    "p_draw": float(draw) if draw else 0.0,
                     "p_away": float(row["p_away"])}
     except Exception as e:
         print(f"[odds] could not read match_odds.csv ({e}); market odds omitted")
@@ -661,15 +805,25 @@ def load_market_odds():
     return out
 
 
-def market_for(market, home, away):
+def market_for(market, home, away, is_ko=False):
     """Bookmaker (win, draw, away) probs for a fixture, oriented to our home/away,
-    or (None, None, None) if the pair isn't priced."""
+    or (None, None, None) if the pair isn't priced.
+
+    For knockout games (`is_ko`) there is no draw: if the book priced the 90-minute
+    3-way, the draw is folded out (Draw-No-Bet normalization) so the line is a
+    "to advance" estimate comparable to the model's tie-winner odds; the returned
+    draw is None."""
     rec = market.get(frozenset((results._fold(home), results._fold(away))))
     if not rec:
         return (None, None, None)
     if rec["home"] == results._fold(home):
-        return (rec["p_home"], rec["p_draw"], rec["p_away"])
-    return (rec["p_away"], rec["p_draw"], rec["p_home"])   # book listed it reversed
+        ph, pd, pa = rec["p_home"], rec["p_draw"], rec["p_away"]
+    else:
+        ph, pd, pa = rec["p_away"], rec["p_draw"], rec["p_home"]   # listed reversed
+    if is_ko:
+        tot = ph + pa
+        return (ph / tot, None, pa / tot) if tot > 0 else (None, None, None)
+    return (ph, pd, pa)
 
 
 def remaining_group_fixtures(teams, res):
@@ -742,7 +896,7 @@ def build_rooting(entries, pool, sim, games_meta, market=None):
         col = oc[:, g]
         is_ko = meta["round"] != "GROUP"
         n_def = int((col != -1).sum())                      # sims where they met
-        mh, md, ma = market_for(market, meta["home"], meta["away"])
+        mh, md, ma = market_for(market, meta["home"], meta["away"], is_ko=is_ko)
         gmeta = {"date": meta["date"], "round": meta["round"],
                  "group": meta["group"], "home": meta["home"], "away": meta["away"],
                  "p_home": None, "p_draw": None, "p_away": None,   # model win/draw/win
@@ -791,7 +945,7 @@ def build_rooting(entries, pool, sim, games_meta, market=None):
 def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
                   actual_own, teams, beta, n_full, now_iso, finals=None, res=None,
                   groups=None, prev=None, recent=None, upcoming=None, odds_at=None,
-                  rooting=None, h2h=None):
+                  rooting=None, h2h=None, bracket=None):
     E = len(entries)
     # current rank by win probability (1 = best), for momentum vs the last build
     win_order = sorted(range(E), key=lambda i: -float(pool["win_prob"][i]))
@@ -859,6 +1013,7 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
         "champion": champ,
         "golden_boot": gb,
         "groups": groups or [],
+        "bracket": bracket or None,
         "recent_results": recent or [],
         "schedule_upcoming": upcoming or [],
         "rooting": rooting,
@@ -874,6 +1029,10 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
                             if leader_live else None),
             "fair_share_pct": round(100.0 / E, 2) if E else 0.0,
             "n_blocked": int(sum(finals["blocked"])) if finals else 0,
+            "n_alive": (E - int(sum(finals["blocked"]))) if finals else E,
+            # highest locked-in floor in the field: an entry whose best case can't
+            # reach this can no longer win the pool ("blocked")
+            "leader_floor": round(float(finals["leader_floor"]), 1) if finals else None,
         },
     }
 
@@ -1001,12 +1160,17 @@ def main():
         pub = {k: v for k, v in u.items() if k not in ("i", "j")}
         pair = frozenset((results._fold(u["home"]), results._fold(u["away"])))
         mph, mpd, mpa = model_by_pair.get(pair, (None, None, None))
-        mh, md, ma = market_for(market, u["home"], u["away"])
+        mh, md, ma = market_for(market, u["home"], u["away"], is_ko=(u["round"] != "GROUP"))
         pub.update(p_home=mph, p_draw=mpd, p_away=mpa,
                    m_home=round(mh, 4) if mh is not None else None,
                    m_draw=round(md, 4) if md is not None else None,
                    m_away=round(ma, 4) if ma is not None else None)
         upcoming_public.append(pub)
+    # resolved knockout bracket (None until the groups are decided / resolvable)
+    bracket = build_bracket(teams, sim, res, upcoming, market, model_by_pair)
+    if bracket:
+        print(f"[bracket] resolved {len(bracket['rounds']['R32'])} R32 matchups"
+              + (f"; champion {bracket['champion']}" if bracket["champion"] else ""))
     prev = None if args.no_prev else fetch_prev(args.prev_url)
 
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
@@ -1017,7 +1181,7 @@ def main():
                             gb, actual_own, teams, beta, n_full, now_iso,
                             finals=finals, res=res, groups=groups, prev=prev,
                             recent=recent, upcoming=upcoming_public, odds_at=odds_at,
-                            rooting=rooting, h2h=h2h)
+                            rooting=rooting, h2h=h2h, bracket=bracket)
 
     # ---- self-checks ----
     wsum = float(pool["win_prob"].sum())
