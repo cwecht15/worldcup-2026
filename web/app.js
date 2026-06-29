@@ -23,6 +23,8 @@ const KO_ROUNDS = ["R32", "R16", "QF", "SF", "FINAL"];
 const KO_PTS = { R32: 5, R16: 7, QF: 10, SF: 15, FINAL: 20 };
 const KO_COL = { R32: "R32", R16: "R16", QF: "QF", SF: "SF", FINAL: "Champ" };
 const KO_PROB_KEY = { R32: "winR32", R16: "winR16", QF: "winQF", SF: "winSF", FINAL: "title" };
+const MEET_LABEL = ["the Round of 32", "the Round of 16", "the Quarterfinals",
+  "the Semifinals", "the Final"];
 
 const MY_ENTRY_KEY = "wc_my_entry"; // localStorage: the visitor's starred entry
 
@@ -304,6 +306,35 @@ function teamInfo(name) {
   return (state.teamByName && state.teamByName.get(normName(name))) || null;
 }
 
+// R32 slot index per team (from the resolved bracket); two teams are on a
+// collision course — meeting at the round where their slot paths converge
+// (slotA>>L === slotB>>L) — so only one can advance past that round
+function teamSlots() {
+  const b = state.sim.bracket, m = new Map();
+  if (b && b.rounds && b.rounds.R32)
+    b.rounds.R32.forEach((n, k) => {
+      if (n.home) m.set(normName(n.home), k);
+      if (n.away) m.set(normName(n.away), k);
+    });
+  return m;
+}
+function meetLevel(sa, sb) {
+  if (sa == null || sb == null) return null;
+  for (let L = 0; L < KO_ROUNDS.length; L++)
+    if ((sa >> L) === (sb >> L)) return L;
+  return null;
+}
+// collision pairs among a list of team names, earliest meeting first
+function collisionsAmong(names) {
+  const slots = teamSlots(), out = [];
+  for (let x = 0; x < names.length; x++)
+    for (let y = x + 1; y < names.length; y++) {
+      const L = meetLevel(slots.get(normName(names[x])), slots.get(normName(names[y])));
+      if (L != null) out.push({ a: names[x], b: names[y], L });
+    }
+  return out.sort((p, q) => p.L - q.L);
+}
+
 /* ---------- "what your entry needs" (per-stage + alive/clinch status) ---------- */
 // highest locked-in floor in the field; an entry whose best case can't reach it
 // can no longer win the pool ("blocked")
@@ -372,8 +403,14 @@ function stageNeedsHTML(e) {
     `<span class="sn-nm">${esc(nm)}</span><small>T${tier}</small></span>` +
     `<span class="sn-out">out — group points only</span></div>`;
   const sum = path.summary ? `<p class="sn-sum">${esc(path.summary)}</p>` : "";
+  const coll = collisionsAmong(alive.map((x) => x.nm));
+  const collNote = coll.length
+    ? `<p class="sn-coll">⚔ Your picks that collide: ` +
+      coll.slice(0, 3).map((c) => `<b>${esc(c.a)}</b> v <b>${esc(c.b)}</b> in ${MEET_LABEL[c.L]}`).join(" · ") +
+      (coll.length > 3 ? ` · +${coll.length - 3} more` : "") +
+      ` — only one survives each, so you can't bank both past that round.</p>` : "";
   return `<div class="stage-needs">${sum}<div class="sn-table">${head}` +
-    alive.map(rowFor).join("") + dead.map(deadRow).join("") + `</div>` +
+    alive.map(rowFor).join("") + dead.map(deadRow).join("") + `</div>${collNote}` +
     `<p class="sn-note">Each % is the model's chance your pick <i>wins that round</i> (and banks the ` +
     `points), given results so far. ⚡ = your linchpin · highlighted = the title you usually need.</p></div>`;
 }
@@ -421,9 +458,20 @@ function threatsHTML(e) {
       `<span class="th-who">lifts <b>${esc(top.name)}</b>${more}</span>` +
       `<span class="th-odds">${title}</span></div>`;
   }).join("");
+  // collisions among the threats: when two play each other one MUST advance, so
+  // you can't need both gone there — root for the lesser threat to knock out the bigger
+  const tmap = new Map(threats.map((t) => [normName(t.team), t.threat]));
+  const coll = collisionsAmong(threats.map((t) => t.team));
+  const collNote = coll.length
+    ? `<p class="th-coll">⚔ Two of these meet, so one survives regardless — ` +
+      coll.slice(0, 3).map((c) => {
+        const lesser = (tmap.get(normName(c.a)) || 0) >= (tmap.get(normName(c.b)) || 0) ? c.b : c.a;
+        const bigger = lesser === c.a ? c.b : c.a;
+        return `<b>${esc(c.a)}</b> v <b>${esc(c.b)}</b> in ${MEET_LABEL[c.L]} (root for ${esc(lesser)} to bump ${esc(bigger)})`;
+      }).join(" · ") + `.</p>` : "";
   return `<div class="threats"><div class="ch">Teams you need to bow out ` +
     `<span class="muted">— rivals' picks you don't hold</span></div>` +
-    `<div class="th-list">${rows}</div>` +
+    `<div class="th-list">${rows}</div>${collNote}` +
     `<p class="sn-note">Not your teams — but each deep run lifts a rival above you, so winning needs them to lose. ` +
     `Ranked by how much the entries holding them threaten you.</p></div>`;
 }

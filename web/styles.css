@@ -698,6 +698,9 @@ tr.row.mine td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 .sn-row.sn-dead .sn-nm{text-decoration:line-through;text-decoration-color:var(--txt-mute)}
 .sn-out{grid-column:2/-1;font-family:var(--mono);font-size:10px;color:var(--txt-mute)}
 .sn-note{font-size:10.5px;color:var(--txt-mute);margin:9px 1px 0;line-height:1.5}
+.sn-coll,.th-coll{font-size:11px;color:var(--txt-dim);margin:8px 1px 0;line-height:1.55;
+  padding-top:7px;border-top:1px dashed var(--line-soft)}
+.sn-coll b,.th-coll b{color:var(--amber)}
 @media(max-width:620px){
   .sn-row{grid-template-columns:minmax(92px,1.2fr) repeat(5,1fr);gap:3px}
   .sn-bar{display:none}.sn-c{justify-content:flex-end}
