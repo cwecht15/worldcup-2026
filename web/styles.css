@@ -703,3 +703,19 @@ tr.row.mine td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
   .sn-bar{display:none}.sn-c{justify-content:flex-end}
   .sn-team small{display:none}
 }
+.threats{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:10px;
+  padding:11px 12px;margin-top:10px;border-left:3px solid var(--red)}
+.threats>.ch{font-family:var(--mono);font-size:10px;letter-spacing:1.2px;text-transform:uppercase;
+  color:var(--txt-mute);margin-bottom:8px}
+.threats>.ch .muted{text-transform:none;letter-spacing:0;font-size:10.5px}
+.th-list{display:flex;flex-direction:column;gap:4px}
+.th-row{display:grid;grid-template-columns:minmax(110px,1.4fr) 1fr auto;align-items:center;gap:8px;
+  font-size:12px;padding:3px 0;border-bottom:1px solid var(--line-soft)}
+.th-row:last-child{border-bottom:0}
+.th-team{display:flex;align-items:center;gap:6px;min-width:0}
+.th-team .flagimg{height:12px;width:17px;flex:0 0 auto}
+.th-team .th-nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+.th-who{color:var(--txt-dim);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.th-who b{color:var(--txt);font-weight:600}.th-more{color:var(--txt-mute)}
+.th-odds{font-family:var(--mono);font-size:10.5px;color:var(--red);white-space:nowrap;text-align:right}
+@media(max-width:620px){.th-row{grid-template-columns:1fr auto;gap:4px}.th-who{grid-column:1/-1;order:3}}

@@ -417,20 +417,57 @@ def fetch_prev(url):
 
 def compute_finals(entries, sim):
     """Per-entry guaranteed (floor) and best-case (ceiling) final totals, plus a
-    mathematical 'blocked from winning' flag: an entry is blocked when its ceiling
-    can't reach the current leader's locked-in floor.  Uses the conditional sim's
-    per-team min/max, so it is automatically all-False before any results exist."""
+    mathematical 'blocked from winning' flag.
+
+    An entry is blocked when some OTHER entry beats it in EVERY remaining scenario.
+    That covers two walls, not just one:
+      * score wall  - even its best case can't reach an entry that's already ahead;
+      * coverage wall - every team it still has alive is also held by an entry
+        that's ahead, so each point it gains, that entry gains too (it can never
+        close the gap).
+    Shared picks contribute equally to both totals, so they cancel: A dominates B
+    iff A's *exclusive* picks' floor already exceeds B's *exclusive* picks' ceiling
+    (strict, using independent per-team min/max -- conservative, never over-blocks).
+    Automatically all-False before any results exist (every team can still gain)."""
     tp_min = sim.total_pts.min(axis=0)
     tp_max = sim.total_pts.max(axis=0)
+    pick_sets = [frozenset(i for i in ent["picks"] if i is not None) for ent in entries]
     floors, ceils = [], []
-    for ent in entries:
-        picks = [i for i in ent["picks"] if i is not None]
-        floors.append(float(tp_min[picks].sum()) if picks else 0.0)
-        ceils.append(float(tp_max[picks].sum()) if picks else 0.0)
+    for s in pick_sets:
+        idx = list(s)
+        floors.append(float(tp_min[idx].sum()) if idx else 0.0)
+        ceils.append(float(tp_max[idx].sum()) if idx else 0.0)
+
+    E = len(entries)
+    blocked = [False] * E
+    block_by = [None] * E          # the entry that mathematically locks this one out
+    block_reason = [None] * E      # "coverage" | "score"
+    live = entries and "live_total" in entries[0]
+    for b in range(E):
+        sb = pick_sets[b]
+        dominators = []
+        for a in range(E):
+            if a == b:
+                continue
+            a_excl = list(pick_sets[a] - sb)
+            b_excl = list(sb - pick_sets[a])
+            a_floor = float(tp_min[a_excl].sum()) if a_excl else 0.0
+            b_ceil = float(tp_max[b_excl].sum()) if b_excl else 0.0
+            if a_floor > b_ceil:                       # A strictly beats B always
+                dominators.append(a)
+        if dominators:
+            # explain via the dominator that's furthest ahead (most intuitive)
+            best = max(dominators, key=lambda a: (entries[a]["live_total"] if live else 0,
+                                                  floors[a]))
+            blocked[b] = True
+            block_by[b] = best
+            b_excl = pick_sets[b] - pick_sets[best]
+            live_excl = [i for i in b_excl if tp_max[i] > tp_min[i]]
+            block_reason[b] = "coverage" if not live_excl else "score"
     leader_floor = max(floors) if floors else 0.0
-    blocked = [c < leader_floor for c in ceils]
     return {"floors": floors, "ceils": ceils, "blocked": blocked,
-            "leader_floor": leader_floor}
+            "leader_floor": leader_floor, "block_by": block_by,
+            "block_reason": block_reason}
 
 
 # ---------------------------------------------------------------------------
@@ -983,6 +1020,9 @@ def build_payload(entries, scores, pool, paths, teams_tbl, best, champ, gb,
             "exp_points": round(float(pool["exp_points"][e]), 1),
             "proj_total": round(float(pool["exp_points"][e]), 1),
             "blocked": bool(finals["blocked"][e]) if finals else False,
+            "blocked_by": (entries[finals["block_by"][e]]["name"]
+                           if finals and finals["block_by"][e] is not None else None),
+            "block_reason": (finals["block_reason"][e] if finals else None),
             "max_final": round(finals["ceils"][e], 1) if finals else None,
             "min_final": round(finals["floors"][e], 1) if finals else None,
             "path": paths[e],

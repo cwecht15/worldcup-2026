@@ -316,10 +316,18 @@ function leaderFloor() {
 // {alive, cushion, html} — is this entry still able to win, and by how much margin
 function aliveStatus(e) {
   const lf = leaderFloor();
-  if (e.blocked)
+  if (e.blocked) {
+    let why;
+    if (e.block_reason === "coverage" && e.blocked_by)
+      why = `every team you have left is also <b>${esc(e.blocked_by)}</b>'s — they're ahead and ` +
+        `gain whenever you do, so you can't pass them.`;
+    else if (e.blocked_by)
+      why = `even your best case <b>${e.max_final}</b> can't catch <b>${esc(e.blocked_by)}</b>'s locked <b>${lf}</b>.`;
+    else
+      why = `best case <b>${e.max_final}</b> can't catch the leader's locked <b>${lf}</b>.`;
     return { alive: false, cushion: 0, html:
-      `<span class="as-pill out">✖ out of the pool</span>` +
-      `<span class="as-txt">best case <b>${e.max_final}</b> can't catch the leader's locked <b>${lf}</b>.</span>` };
+      `<span class="as-pill out">✖ out of the pool</span><span class="as-txt">${why}</span>` };
+  }
   const cush = e.max_final != null ? e.max_final - lf : null;
   return { alive: true, cushion: cush, html:
     `<span class="as-pill live">✓ still alive</span>` +
@@ -368,6 +376,56 @@ function stageNeedsHTML(e) {
     alive.map(rowFor).join("") + dead.map(deadRow).join("") + `</div>` +
     `<p class="sn-note">Each % is the model's chance your pick <i>wins that round</i> (and banks the ` +
     `points), given results so far. ⚡ = your linchpin · highlighted = the title you usually need.</p></div>`;
+}
+
+// winning the pool also needs RIVALS' teams to fail: rank the still-alive teams
+// the entry doesn't hold by how much they threaten it (sum of P(owner finishes
+// ahead of you) over the entries that hold each team)
+function rivalThreats(e) {
+  const sim = state.sim, h = sim.h2h;
+  if (!h || !h.ahead) return [];
+  const mi = (sim.entries || []).findIndex((x) => normName(x.name) === normName(e.name));
+  if (mi < 0) return [];
+  const elim = state.elim || new Set();
+  const mine = new Set((e.picks || []).filter(Boolean).map(normName));
+  const byTeam = new Map();
+  sim.entries.forEach((a, ai) => {
+    if (ai === mi) return;
+    const ah = (h.ahead[ai] && h.ahead[ai][mi]) || 0;
+    if (ah <= 0.01) return;                       // this entry barely threatens you
+    (a.picks || []).forEach((t) => {
+      if (!t) return;
+      const k = normName(t);
+      if (mine.has(k) || elim.has(t)) return;     // shared (cancels) or already gone
+      const rec = byTeam.get(k) || { team: t, threat: 0, owners: [] };
+      rec.threat += ah;
+      rec.owners.push({ name: a.name, ahead: ah });
+      byTeam.set(k, rec);
+    });
+  });
+  const arr = [...byTeam.values()];
+  arr.forEach((r) => r.owners.sort((x, y) => y.ahead - x.ahead));
+  arr.sort((x, y) => y.threat - x.threat);
+  return arr.slice(0, 6);
+}
+
+function threatsHTML(e) {
+  const threats = rivalThreats(e);
+  if (!threats.length) return "";
+  const rows = threats.map((r) => {
+    const info = teamInfo(r.team);
+    const title = info && info.title != null ? `${info.title}% title` : "";
+    const top = r.owners[0];
+    const more = r.owners.length > 1 ? `<span class="th-more"> +${r.owners.length - 1}</span>` : "";
+    return `<div class="th-row"><span class="th-team">${getFlag(r.team)} <span class="th-nm">${esc(r.team)}</span></span>` +
+      `<span class="th-who">lifts <b>${esc(top.name)}</b>${more}</span>` +
+      `<span class="th-odds">${title}</span></div>`;
+  }).join("");
+  return `<div class="threats"><div class="ch">Teams you need to bow out ` +
+    `<span class="muted">— rivals' picks you don't hold</span></div>` +
+    `<div class="th-list">${rows}</div>` +
+    `<p class="sn-note">Not your teams — but each deep run lifts a rival above you, so winning needs them to lose. ` +
+    `Ranked by how much the entries holding them threaten you.</p></div>`;
 }
 
 function renderBracket() {
@@ -894,7 +952,7 @@ function renderRooting() {
   const status = cond && me.max_final != null
     ? `<div class="alive-status${me.blocked ? " out" : ""}">${aliveStatus(me).html}</div>` : "";
   const stageBlock = cond
-    ? `<div class="sn-block root-needs"><div class="ch">What you need — by stage</div>${stageNeedsHTML(me)}</div>`
+    ? `<div class="sn-block root-needs"><div class="ch">What you need — by stage</div>${stageNeedsHTML(me)}${threatsHTML(me)}</div>`
     : "";
   sec.innerHTML = head(hdr + status + stageBlock + body + note);
 }
@@ -1221,7 +1279,7 @@ function renderDetail(e) {
   const status = cond && e.max_final != null
     ? `<div class="alive-status${e.blocked ? " out" : ""}">${aliveStatus(e).html}</div>` : "";
   const needs = cond
-    ? `<div class="sn-block"><div class="ch">What you need — by stage</div>${stageNeedsHTML(e)}</div>` : "";
+    ? `<div class="sn-block"><div class="ch">What you need — by stage</div>${stageNeedsHTML(e)}${threatsHTML(e)}</div>` : "";
   return `<tr class="detail"><td colspan="7"><div class="detail-inner">
     ${status}
     <div>
