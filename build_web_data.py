@@ -415,7 +415,7 @@ def fetch_prev(url):
             "odds_at": meta.get("odds_at")}
 
 
-def compute_finals(entries, sim):
+def compute_finals(entries, sim, levels=None, bracket_teams=None):
     """Per-entry guaranteed (floor) and best-case (ceiling) final totals, plus a
     mathematical 'blocked from winning' flag.
 
@@ -426,17 +426,30 @@ def compute_finals(entries, sim):
         that's ahead, so each point it gains, that entry gains too (it can never
         close the gap).
     Shared picks contribute equally to both totals, so they cancel: A dominates B
-    iff A's *exclusive* picks' floor already exceeds B's *exclusive* picks' ceiling
-    (strict, using independent per-team min/max -- conservative, never over-blocks).
-    Automatically all-False before any results exist (every team can still gain)."""
+    iff A's *exclusive* picks' floor already exceeds B's *exclusive* picks' ceiling.
+
+    Floors/ceilings are bracket-aware when `levels`/`bracket_teams` are given: two
+    of an entry's teams in the same half can't both reach the final (one knocks the
+    other out), so best case is capped accordingly -- which also exposes more
+    blocked entries.  Falls back to independent per-team min/max sums (a safe upper
+    bound) when the bracket isn't resolved.  All-False before any results exist."""
     tp_min = sim.total_pts.min(axis=0)
     tp_max = sim.total_pts.max(axis=0)
     pick_sets = [frozenset(i for i in ent["picks"] if i is not None) for ent in entries]
+    use_bracket = levels is not None and bracket_teams is not None
+    cache = {}
+
+    def bounds(s):
+        if use_bracket:
+            return bracket_bounds(s, levels, bracket_teams, tp_min, cache)
+        idx = list(s)
+        return (float(tp_min[idx].sum()) if idx else 0.0,
+                float(tp_max[idx].sum()) if idx else 0.0)
+
     floors, ceils = [], []
     for s in pick_sets:
-        idx = list(s)
-        floors.append(float(tp_min[idx].sum()) if idx else 0.0)
-        ceils.append(float(tp_max[idx].sum()) if idx else 0.0)
+        f, c = bounds(s)
+        floors.append(f); ceils.append(c)
 
     E = len(entries)
     blocked = [False] * E
@@ -449,10 +462,8 @@ def compute_finals(entries, sim):
         for a in range(E):
             if a == b:
                 continue
-            a_excl = list(pick_sets[a] - sb)
-            b_excl = list(sb - pick_sets[a])
-            a_floor = float(tp_min[a_excl].sum()) if a_excl else 0.0
-            b_ceil = float(tp_max[b_excl].sum()) if b_excl else 0.0
+            a_floor = bounds(pick_sets[a] - sb)[0]     # A's exclusive picks' floor
+            b_ceil = bounds(sb - pick_sets[a])[1]      # B's exclusive picks' ceiling
             if a_floor > b_ceil:                       # A strictly beats B always
                 dominators.append(a)
         if dominators:
@@ -619,22 +630,14 @@ def build_groups(teams, sim, res):
 KO_ROUNDS = ("R32", "R16", "QF", "SF", "FINAL")
 
 
-def build_bracket(teams, sim, res, upcoming, market, model_by_pair):
-    """Resolved knockout bracket (R32 -> Final) once the groups are decided.
-
-    Returns None until the 16 Round-of-32 matchups can be resolved from real
-    standings + the fixture feed (so the site degrades to the existing views
-    rather than ever drawing a wrong bracket).  Each round is a list of nodes,
-    top-to-bottom in bracket order; adjacent nodes fold into the next round, so
-    the frontend can draw the whole tree.  A node carries the two teams (real
-    where known, else null = TBD), the score if the game has been played, and
-    model + market win odds while it is still upcoming.  Per-team odds to reach
-    each round / win it all already live in the `teams` table."""
+def _resolve_bracket(teams, res, upcoming):
+    """Resolve the 16 Round-of-32 matchups (in bracket-fold order) plus a map of
+    every played/upcoming knockout pairing, from real group standings + the
+    fixture feed.  Returns (r32_pairs, pairinfo) or (None, None) when it can't be
+    resolved cleanly, so callers degrade rather than trust a wrong bracket."""
     if not res:
-        return None
+        return None, None
     nteam = teams.n
-
-    # ---- group standings -> winner / runner-up per group ----
     rec = {i: {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0} for i in range(nteam)}
     for m in res.matches:
         if m["round"] != "GROUP":
@@ -654,7 +657,6 @@ def build_bracket(teams, sim, res, upcoming, market, model_by_pair):
         if len(ordered) >= 2:
             winner[g], runner[g] = ordered[0], ordered[1]
 
-    # ---- every actual knockout pairing (played + upcoming) -> info ----
     pairinfo = {}     # frozenset(i,j) -> {home, away, date, played, hg, ag, winner, round}
 
     def winner_idx(i, j, gi, gj):
@@ -680,7 +682,6 @@ def build_bracket(teams, sim, res, upcoming, market, model_by_pair):
             "home": i, "away": j, "date": u.get("date"), "played": False,
             "winner": None, "round": u["round"]}
 
-    # ---- resolve the 16 R32 matchups, in bracket-fold order ----
     r32_set = {k for k, v in pairinfo.items() if v["round"] == "R32"}
     team_to_r32 = {}
     for k in r32_set:
@@ -701,17 +702,122 @@ def build_bracket(teams, sim, res, upcoming, market, model_by_pair):
         a, b = resolve_wr(p1), resolve_wr(p2)
         known = a if a is not None else b
         if known is None or known not in team_to_r32:
-            return None
+            return None, None
         key = team_to_r32[known]
         if a is None or b is None:                    # fill the third-place slot
             other = next(t for t in key if t != known)
             a = other if a is None else a
             b = other if b is None else b
         if frozenset((a, b)) != key:                  # resolved pair must match reality
-            return None
+            return None, None
         r32_pairs.append(key)
     if len(set(r32_pairs)) != 16 or set(r32_pairs) != r32_set:
-        return None                                   # not a clean permutation -> bail
+        return None, None                             # not a clean permutation -> bail
+    return r32_pairs, pairinfo
+
+
+_KO_LEVEL_PTS = [5, 7, 10, 15, 20]   # R32, R16, QF, SF, FINAL win points
+
+
+def _bracket_levels(r32_pairs, pairinfo):
+    """Bottom-up match tree for the resolved bracket: a list of levels (R32 ..
+    FINAL); each node carries its two teams (when both feeders are decided),
+    whether its game has been played, the winner if so, and the indices of its
+    two child nodes (None at R32).  Entry-independent structure for the DP."""
+    def win_of(pair):
+        info = pairinfo.get(pair)
+        return info["winner"] if (info and info["played"]) else None
+    lvl = []
+    for pair in r32_pairs:
+        info = pairinfo.get(pair)
+        i, j = tuple(pair)
+        lvl.append({"teams": (i, j), "decided": bool(info and info["played"]),
+                    "winner": win_of(pair), "children": None})
+    levels = [lvl]
+    while len(lvl) > 1:
+        nxt = []
+        for k in range(0, len(lvl), 2):
+            w1, w2 = lvl[k]["winner"], lvl[k + 1]["winner"]
+            teams_ = (w1, w2) if (w1 is not None and w2 is not None) else None
+            decided, winner = False, None
+            if teams_ is not None:
+                info = pairinfo.get(frozenset(teams_))
+                if info and info["played"]:
+                    decided, winner = True, info["winner"]
+            nxt.append({"teams": teams_, "decided": decided, "winner": winner,
+                        "children": (k, k + 1)})
+        levels.append(nxt)
+        lvl = nxt
+    return levels
+
+
+def _dp_future(levels, mine, mode="max"):
+    """Best- (mode='max') or worst-case (mode='min') FUTURE knockout points the
+    `mine` teams can jointly earn over the remaining bracket, respecting that two
+    of them in the same region must eliminate each other (only one survives a
+    shared node).  Per node we keep {emerging mine-team, or 'x' for any other} ->
+    extreme points; a played game forces its winner and adds 0 (already locked)."""
+    pick = max if mode == "max" else min
+    worst = float("-inf") if mode == "max" else float("inf")
+    node_dp = []
+    for L, lvl in enumerate(levels):
+        p = _KO_LEVEL_PTS[L]
+        cur = []
+        for n in lvl:
+            d = {}
+            if n["children"] is None:                 # R32 match (two real teams)
+                i, j = n["teams"]
+                if n["decided"]:
+                    w = n["winner"]
+                    d[w if w in mine else "x"] = 0
+                else:
+                    for cand in (i, j):
+                        key = cand if cand in mine else "x"
+                        d[key] = pick(d.get(key, worst), p if cand in mine else 0)
+            else:
+                prev = node_dp[L - 1]                 # child nodes live one level down
+                c1, c2 = prev[n["children"][0]], prev[n["children"][1]]
+                if n["decided"]:                      # both feeders settled
+                    w = n["winner"]
+                    d[w if w in mine else "x"] = pick(c1.values()) + pick(c2.values())
+                else:
+                    e1, e2 = pick(c2.values()), pick(c1.values())   # loser-side extreme
+                    for w, vw in c1.items():
+                        d[w] = pick(d.get(w, worst), vw + e1 + (p if w != "x" else 0))
+                    for w, vw in c2.items():
+                        d[w] = pick(d.get(w, worst), vw + e2 + (p if w != "x" else 0))
+            cur.append(d)
+        node_dp.append(cur)
+    return pick(node_dp[-1][0].values())
+
+
+def bracket_bounds(pick_set, levels, bracket_teams, tp_min, cache=None):
+    """(floor, ceiling) final points for a set of team indices, bracket-aware:
+    locked points (group + KO already won) from tp_min, plus the remaining
+    knockout downside/upside from the DP over the picks still alive -- so a team's
+    two contenders in the same half can't both be counted to the final."""
+    if cache is not None and pick_set in cache:
+        return cache[pick_set]
+    locked = float(sum(float(tp_min[i]) for i in pick_set))
+    mine = {i for i in pick_set if i in bracket_teams}
+    if not mine:
+        out = (locked, locked)
+    else:
+        out = (locked + _dp_future(levels, mine, "min"),
+               locked + _dp_future(levels, mine, "max"))
+    if cache is not None:
+        cache[pick_set] = out
+    return out
+
+
+def build_bracket(teams, sim, res, market, model_by_pair, r32_pairs, pairinfo):
+    """Resolved knockout bracket (R32 -> Final) for the frontend tree, built from
+    the pre-resolved (r32_pairs, pairinfo).  Returns None until it resolves.  Each
+    round is a list of nodes, top-to-bottom in bracket order; adjacent nodes fold
+    into the next round.  A node carries its teams, the score if the game has been
+    played, and model + market win odds while it is still upcoming."""
+    if r32_pairs is None or not res:
+        return None
 
     # ---- assemble nodes round-by-round, folding winners upward ----
     def node_for(key):
@@ -1170,10 +1276,17 @@ def main():
         for kind, who, raw in unmapped_log[:20]:
             print(f"         {who}: {kind} '{raw}'")
 
+    # resolve the knockout bracket once: powers the bracket view AND the
+    # bracket-aware floors/ceilings (two of an entry's teams in the same half
+    # can't both reach the final, so best case is capped)
+    r32_pairs, pairinfo = _resolve_bracket(teams, res, upcoming)
+    levels = _bracket_levels(r32_pairs, pairinfo) if r32_pairs is not None else None
+    bracket_teams = set().union(*r32_pairs) if r32_pairs is not None else None
+
     scores = build_entry_scores(entries, sim)
     pool = resolve_pool(entries, scores, sim, gb_goals, gb_players)
     paths = build_paths(entries, scores, pool, sim, teams)
-    finals = compute_finals(entries, sim)
+    finals = compute_finals(entries, sim, levels=levels, bracket_teams=bracket_teams)
     rooting = build_rooting(entries, pool, sim, rooting_games, market=market)
     # pairwise head-to-head: P(a finishes ahead of b), aligned to `entries` order
     h2h_mat = build_h2h(pool["key"])
@@ -1207,7 +1320,7 @@ def main():
                    m_away=round(ma, 4) if ma is not None else None)
         upcoming_public.append(pub)
     # resolved knockout bracket (None until the groups are decided / resolvable)
-    bracket = build_bracket(teams, sim, res, upcoming, market, model_by_pair)
+    bracket = build_bracket(teams, sim, res, market, model_by_pair, r32_pairs, pairinfo)
     if bracket:
         print(f"[bracket] resolved {len(bracket['rounds']['R32'])} R32 matchups"
               + (f"; champion {bracket['champion']}" if bracket["champion"] else ""))
