@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from . import wcdata
+from . import third_place_table
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 
@@ -145,48 +146,40 @@ def load_match_odds(teams, path=None):
 # ---------------------------------------------------------------------------
 # Third-place slot assignment
 # ---------------------------------------------------------------------------
-def _solve_matching(qualifying_groups):
-    """Assign the 8 reserved third-place slots to the 8 qualifying groups.
-
-    Returns dict slot -> group letter, or None if no perfect matching exists.
-    Deterministic (slots processed in fixed order, groups tried alphabetically).
-    """
-    slots = list(wcdata.THIRD_SLOTS.keys())
-    qg = sorted(qualifying_groups)
-    assignment = {}
-    used = set()
-
-    def backtrack(k):
-        if k == len(slots):
-            return True
-        slot = slots[k]
-        allowed = wcdata.THIRD_SLOTS[slot]
-        for g in qg:
-            if g in used or g not in allowed:
-                continue
-            assignment[slot] = g
-            used.add(g)
-            if backtrack(k + 1):
-                return True
-            used.discard(g)
-            del assignment[slot]
-        return False
-
-    if backtrack(0):
-        return dict(assignment)
-    return None
+def _winner_slot_columns():
+    """Group winner -> third-place slot id, for the 8 R32 matches that pair a
+    group winner with a third-place qualifier, ordered by FIFA's column order
+    (third_place_table.COLUMN_ORDER).  Derived from wcdata.R32_MATCHES so the
+    stored Annex C table stays bound to the bracket structure."""
+    winner_slot = {}
+    for _mnum, (p1, p2) in wcdata.R32_MATCHES.items():
+        parts = {p1[0]: p1, p2[0]: p2}
+        if "W" in parts and "3" in parts:
+            winner_slot[parts["W"][1]] = parts["3"][1]
+    cols = third_place_table.COLUMN_ORDER
+    if sorted(winner_slot) != sorted(cols):
+        raise ValueError("R32_MATCHES winner-vs-third columns "
+                         f"{sorted(winner_slot)} != Annex C COLUMN_ORDER {sorted(cols)}")
+    return [winner_slot[g] for g in cols]
 
 
 def build_third_place_assignments():
-    """Precompute slot->group assignments for all C(12,8)=495 qualifying sets.
+    """Slot->group assignment for all C(12,8)=495 qualifying sets, from FIFA's
+    official Annex C table (third_place_table.ANNEX_C).
 
-    Keyed by frozenset of the 8 qualifying group letters.
-    """
+    Keyed by frozenset of the 8 qualifying group letters.  Returns (table,
+    failures); failures lists combinations missing from Annex C (always empty for
+    a complete table).  Unlike a greedy perfect matching, this is FIFA's single
+    published choice among the (usually several) legal matchings, so a team that
+    really lost can't be slotted against the wrong opponent in the sim."""
+    col_slots = _winner_slot_columns()
     table = {}
-    failures = []
-    for combo in combinations(wcdata.GROUP_LETTERS, 8):
-        m = _solve_matching(set(combo))
-        if m is None:
-            failures.append(combo)
-        table[frozenset(combo)] = m
+    for combo, assign in third_place_table.ANNEX_C.items():
+        amap = {col_slots[k]: assign[k] for k in range(8)}
+        for slot, grp in amap.items():               # guard against data corruption
+            if grp not in wcdata.THIRD_SLOTS[slot]:
+                raise ValueError(f"Annex C {combo}: 3{grp} not allowed in slot {slot}")
+        table[frozenset(combo)] = amap
+    failures = [combo for combo in combinations(wcdata.GROUP_LETTERS, 8)
+                if frozenset(combo) not in table]
     return table, failures
