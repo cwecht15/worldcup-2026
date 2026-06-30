@@ -1251,6 +1251,16 @@ def main():
             remaining_group_fixtures(teams0, res), teams0)
     if track:
         print(f"[rooting] tracking {len(track)} upcoming games for win% conditioning")
+
+    # once the group stage is complete the real R32 bracket is known; pin the
+    # conditional sim to it so the played-match overrides land on the actual
+    # matchups (the computed third-place slot table can disagree with reality)
+    r32_entrants = None
+    r32_pairs0, _pairinfo0 = _resolve_bracket(teams0, res, upcoming)
+    if r32_pairs0 is not None:
+        r32_entrants = [t for pair in r32_pairs0 for t in pair]   # 32, BRACKET_ORDER
+        print(f"[bracket] pinning conditional sim to the resolved R32 bracket "
+              f"({len(r32_pairs0)} matches)")
     # bookmaker odds already on disk (from the twice-daily refresh) — no API call
     market = load_market_odds()
     if market:
@@ -1259,7 +1269,8 @@ def main():
     n_full = args.n if args.n is not None else (8000 if args.quick else 200_000)
     print(f"[build] running engine (n_sims={n_full:,})...")
     teams, players, _third, beta, _target, _strength, sim = build_sim(
-        quick=args.quick, n_full=n_full, verbose=True, fixed=fixed, track=track)
+        quick=args.quick, n_full=n_full, verbose=True, fixed=fixed, track=track,
+        r32_entrants=r32_entrants)
 
     # canonical Golden-Boot goals/players (filtered + reset), goals-aware if live
     rtg = res.real_team_goals if res else None

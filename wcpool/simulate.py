@@ -45,10 +45,19 @@ class SimResult:
 
 
 def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
-             strength=None, fixed=None, track=None):
+             strength=None, fixed=None, track=None, r32_entrants=None):
     """Monte Carlo of the bracket. If `fixed` is given (from results.Results.fixed()),
     matches that have actually been played are forced to their real outcome and only
     the remaining matches are simulated (a conditional simulation).
+
+    If `r32_entrants` is given (a length-32 sequence of team indices in
+    wcdata.BRACKET_ORDER, two per R32 match), the Round-of-32 field is pinned to
+    that real bracket in every sim instead of being re-derived from group standings
+    + the computed third-place slot table.  Use this once the group stage is
+    complete: the real R32 matchups are known, and re-deriving them can disagree
+    with FIFA's official third-place slotting, which would make the `fixed`
+    knockout overrides (keyed by team pair) land on the wrong matchups and let a
+    team that really lost keep advancing.
 
     If `track` is given (a list of {"code": lo*nteam+hi, "home_idx", "away_idx"},
     one per upcoming game we want to analyze), the per-sim outcome of each tracked
@@ -130,38 +139,45 @@ def simulate(teams, beta, base, home_adv, third_table, n_sims=100_000, seed=0,
         thirds[:, gi] = members[third_local]
         third_score[:, gi] = key[rN, third_local]
 
-    # ----- Best 8 third-place teams -> slot assignment -----
-    arg = np.argsort(-third_score, axis=1)            # [N,12] group cols best->worst
-    top8 = arg[:, :8]
-    qual = np.zeros((N, 12), dtype=bool)
-    np.put_along_axis(qual, top8, True, axis=1)
-    powers = (1 << np.arange(12)).astype(np.int64)
-    mask = qual.astype(np.int64) @ powers
+    if r32_entrants is not None:
+        # ----- Pin the R32 field to the real (known) bracket -----
+        ent = np.asarray(r32_entrants, dtype=np.int32)
+        if ent.shape != (32,):
+            raise ValueError(f"r32_entrants must have length 32, got {ent.shape}")
+        current = np.broadcast_to(ent, (N, 32)).copy()  # [N, 32], same every sim
+    else:
+        # ----- Best 8 third-place teams -> slot assignment -----
+        arg = np.argsort(-third_score, axis=1)        # [N,12] group cols best->worst
+        top8 = arg[:, :8]
+        qual = np.zeros((N, 12), dtype=bool)
+        np.put_along_axis(qual, top8, True, axis=1)
+        powers = (1 << np.arange(12)).astype(np.int64)
+        mask = qual.astype(np.int64) @ powers
 
-    slot_ids = list(wcdata.THIRD_SLOTS.keys())
-    third_slot_team = {s: np.full(N, -1, dtype=np.int32) for s in slot_ids}
-    for m in np.unique(mask):
-        groups_in = [GL[p] for p in range(12) if (m >> p) & 1]
-        assign = third_table[frozenset(groups_in)]
-        sel = mask == m
-        for slot, grp in assign.items():
-            third_slot_team[slot][sel] = thirds[sel, GL.index(grp)]
+        slot_ids = list(wcdata.THIRD_SLOTS.keys())
+        third_slot_team = {s: np.full(N, -1, dtype=np.int32) for s in slot_ids}
+        for m in np.unique(mask):
+            groups_in = [GL[p] for p in range(12) if (m >> p) & 1]
+            assign = third_table[frozenset(groups_in)]
+            sel = mask == m
+            for slot, grp in assign.items():
+                third_slot_team[slot][sel] = thirds[sel, GL.index(grp)]
 
-    # ----- Build the 32 knockout entrants in bracket-fold order -----
-    def resolve(part):
-        kind, ref = part
-        if kind == "W":
-            return winners[:, GL.index(ref)]
-        if kind == "R":
-            return runners[:, GL.index(ref)]
-        return third_slot_team[ref]                   # ("3", slot_id)
+        # ----- Build the 32 knockout entrants in bracket-fold order -----
+        def resolve(part):
+            kind, ref = part
+            if kind == "W":
+                return winners[:, GL.index(ref)]
+            if kind == "R":
+                return runners[:, GL.index(ref)]
+            return third_slot_team[ref]               # ("3", slot_id)
 
-    entrants = []
-    for mnum in wcdata.BRACKET_ORDER:
-        p1, p2 = wcdata.R32_MATCHES[mnum]
-        entrants.append(resolve(p1))
-        entrants.append(resolve(p2))
-    current = np.stack(entrants, axis=1)              # [N, 32]
+        entrants = []
+        for mnum in wcdata.BRACKET_ORDER:
+            p1, p2 = wcdata.R32_MATCHES[mnum]
+            entrants.append(resolve(p1))
+            entrants.append(resolve(p2))
+        current = np.stack(entrants, axis=1)          # [N, 32]
 
     reach_counts = np.bincount(current.ravel(), minlength=nteam)
     roundwin_counts = {}

@@ -21,7 +21,8 @@ def fmt_portfolio(teams, idxs):
     return " / ".join(parts)  # " / " not " | " so it survives inside markdown tables
 
 
-def build_sim(quick=False, n_full=None, verbose=True, fixed=None, track=None):
+def build_sim(quick=False, n_full=None, verbose=True, fixed=None, track=None,
+              r32_entrants=None):
     """Load data, calibrate to the market, and run the Monte Carlo.
 
     Returns (teams, players, third_table, beta, target, strength, sim).
@@ -30,6 +31,10 @@ def build_sim(quick=False, n_full=None, verbose=True, fixed=None, track=None):
     already played; calibration still uses the market.  If `track` is provided
     (a list of upcoming games), the final sim records each tracked game's per-sim
     outcome in sim.tracked_outcomes (used for the "what to root for" analysis).
+    If `r32_entrants` is provided (the real Round-of-32 field, available once the
+    group stage is complete), the final sim pins the bracket to it so the `fixed`
+    knockout overrides land on the actual matchups; calibration stays
+    pre-tournament (unconditioned), so it is never pinned.
     """
     teams = model.load_teams()
     players = model.load_players()
@@ -83,7 +88,8 @@ def build_sim(quick=False, n_full=None, verbose=True, fixed=None, track=None):
         print(f"\n[simulate] running {n_full:,} simulations...")
     sim = sim_mod.simulate(teams, beta=beta, base=1.32, home_adv=70.0,
                            third_table=third_table, n_sims=n_full, seed=2026,
-                           strength=strength, fixed=fixed, track=track)
+                           strength=strength, fixed=fixed, track=track,
+                           r32_entrants=r32_entrants)
     return teams, players, third_table, beta, target, strength, sim
 
 
