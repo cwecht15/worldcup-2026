@@ -48,8 +48,20 @@ python fetch_odds.py
 python run.py
 ```
 
+## Live results
+As the tournament unfolds, `python fetch_results.py` pulls completed matches from
+football-data.org into `data/results.json`; `build_web_data.py` then **conditions**
+the sim on them (accrued points, win %, Golden Boot, and "who can still win the
+pool" all reflect where the tournament actually is). Once the group stage is done
+the knockout bracket is pinned to reality. No key / no matches ⇒ it stays in
+pre-tournament mode. A GitHub Action refetches and redeploys the site on a
+schedule.
+
 ## Tuning
 - Field size / chalkiness: `optimize(..., M=20, gamma=1.5)` in `run.py`.
 - More teams in the Golden Boot race: add rows to `data/players.csv`.
-- As the tournament unfolds, edit results into the model (future work) or just
-  re-run with updated odds.
+
+## Maintaining / new tournaments
+See **MAINTENANCE.md** — the per-tournament update checklist plus two non-obvious
+correctness traps (FIFA's official third-place table must be used verbatim, not
+computed; and the conditional sim pins the R32 bracket to reality).
